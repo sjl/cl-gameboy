@@ -9,9 +9,10 @@
 
   :depends-on (:iterate
                :losh
-               ; :trivia
-               ; :cl-algebraic-data-type
-               :cl-arrows)
+               :cl-arrows
+               :qtools
+               :qtcore
+               :qtgui)
 
   :serial t
   :components ((:module "vendor" :serial t
