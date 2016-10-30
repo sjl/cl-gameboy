@@ -46,8 +46,8 @@
   (zero-page-ram (make-mem 128) :type memory-array :read-only t))
 
 (defstruct (gameboy (:conc-name gb-))
-  (clock-m 0 :type int8)
-  (clock-t 0 :type int8)
+  (clock 0 :type int8)
+  (clock-increment 0 :type int8)
   (a 0 :type int8)
   (b 0 :type int8)
   (c 0 :type int8)
@@ -58,8 +58,6 @@
   (f 0 :type int8)
   (pc 0 :type int16)
   (sp 0 :type int16)
-  (cm 0 :type int8)
-  (ct 0 :type int8)
   (mmu (make-mmu) :type mmu))
 
 
@@ -67,7 +65,11 @@
   in-bios bios rom working-ram external-ram zero-page-ram)
 
 (define-with-macro (gameboy :conc-name gb)
-  a b c d e h l f cm ct pc sp clock-m clock-t)
+  a b c d e h l f pc sp clock clock-increment)
+
+
+(defmethod print-object ((object gameboy) stream)
+  (print-unreadable-object (object stream :type t :identity t)))
 
 
 ;;;; Bit Fuckery --------------------------------------------------------------
@@ -108,10 +110,9 @@
 ;;;; More Utils ---------------------------------------------------------------
 (declaim (inline increment-clock))
 
-(defun increment-clock (gameboy &optional (m 1))
+(defun increment-clock (gameboy &optional (machine-cycles 1))
   (with-gameboy (gameboy)
-    (setf cm m
-          ct (* m 4))))
+    (setf clock-increment machine-cycles)))
 
 (defmacro with-chopped ((full-symbol truncated-symbol expr) &body body)
   `(let* ((,full-symbol ,expr)
@@ -231,7 +232,7 @@
 ;;;; VM -----------------------------------------------------------------------
 (defun reset (gameboy)
   (with-gameboy (gameboy)
-    (setf a 0 b 0 c 0 d 0 e 0 h 0 l 0 f 0 sp 0 pc 0 clock-m 0 clock-t 0)))
+    (setf a 0 b 0 c 0 d 0 e 0 h 0 l 0 f 0 sp 0 pc 0 clock 0)))
 
 
 (defparameter *running* t)
@@ -257,8 +258,7 @@
       (incf pc)
       (funcall op gameboy)
       (zapf pc (chop-16 %))
-      (setf clock-m cm
-            clock-t ct))))
+      (incf clock clock-increment))))
 
 
 
