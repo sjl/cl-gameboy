@@ -5,37 +5,41 @@
 (declaim (optimize (speed 1) (safety 3) (debug 3)))
 
 
-(deftype word () '(unsigned-byte 8))
-(deftype addr () '(unsigned-byte 16))
+(deftype int8 () '(unsigned-byte 8))
+(deftype int16 () '(unsigned-byte 16))
 
 
 (defstruct (gameboy (:conc-name gb-))
-  (clock-m 0 :type word)
-  (clock-t 0 :type word)
-  (a 0 :type word)
-  (b 0 :type word)
-  (c 0 :type word)
-  (d 0 :type word)
-  (e 0 :type word)
-  (h 0 :type word)
-  (l 0 :type word)
-  (f 0 :type word)
-  (pc 0 :type addr)
-  (sp 0 :type addr)
-  (cm 0 :type word)
-  (ct 0 :type word))
+  (clock-m 0 :type int8)
+  (clock-t 0 :type int8)
+  (a 0 :type int8)
+  (b 0 :type int8)
+  (c 0 :type int8)
+  (d 0 :type int8)
+  (e 0 :type int8)
+  (h 0 :type int8)
+  (l 0 :type int8)
+  (f 0 :type int8)
+  (pc 0 :type int16)
+  (sp 0 :type int16)
+  (cm 0 :type int8)
+  (ct 0 :type int8))
 
 (define-with-macro (gameboy :conc-name gb)
-  a b c d e h l f cm ct pc sp)
+  a b c d e h l f cm ct pc sp clock-m clock-t)
 
 
 ;;;; Bit Fuckery --------------------------------------------------------------
-(declaim (inline to-bit chop))
+(declaim (inline to-bit chop-8 chop-16))
+
 (defun to-bit (value)
   (if value 1 0))
 
-(defun chop (value)
+(defun chop-8 (value)
   (ldb (byte 8 0) value))
+
+(defun chop-16 (value)
+  (ldb (byte 16 0) value))
 
 
 ;;;; Flag Register ------------------------------------------------------------
@@ -63,38 +67,119 @@
 ;;;; Utils --------------------------------------------------------------------
 (declaim (inline increment-clock))
 
-(defun increment-clock (gameboy &optional (m-incr 1) (t-incr 4))
+(defun increment-clock (gameboy &optional (m 1))
   (with-gameboy (gameboy)
-    (setf cm m-incr
-          ct t-incr)))
+    (setf cm m
+          ct (* m 4))))
 
 (defmacro with-chopped ((full-symbol truncated-symbol expr) &body body)
   `(let* ((,full-symbol ,expr)
-          (,truncated-symbol (chop ,full-symbol)))
+          (,truncated-symbol (chop-8 ,full-symbol)))
     ,@body))
 
 
+;;;; Memory -------------------------------------------------------------------
+(defun read-8 (gameboy address)
+  ;todo
+  )
+
+(defun read-16 (gameboy address)
+  ;todo
+  )
+
+(defun write-8 (gameboy address value)
+  ;todo
+  )
+
+(defun write-16 (gameboy address value)
+  ;todo
+  )
+
+
 ;;;; Opcodes ------------------------------------------------------------------
-(defun op-add-e (gameboy)
-  (with-gameboy (gameboy)
-    (with-chopped (full trunc (+ a e))
-      (set-flag gameboy
-                :zero (zerop trunc)
-                :half-carry nil ; todo
-                :carry (> full 255))
-      (setf a trunc)))
+(defmacro define-opcode (name &rest body)
+  `(defun ,name (gameboy)
+    (with-gameboy (gameboy)
+      ,@body)))
+
+
+(define-opcode op-add-e
+  (with-chopped (full trunc (+ a e))
+    (set-flag gameboy
+              :zero (zerop trunc)
+              :half-carry nil ; todo
+              :carry (> full 255))
+    (setf a trunc))
   (increment-clock gameboy))
 
-(defun op-cp-b (gameboy)
-  (with-gameboy (gameboy)
-    (with-chopped (full trunc (- a b))
-      (set-flag gameboy
-                :zero (zerop trunc)
-                :subtract t
-                :half-carry nil ; todo
-                :carry (minusp full))))
+(define-opcode op-cp-b
+  (with-chopped (full trunc (- a b))
+    (set-flag gameboy
+              :zero (zerop trunc)
+              :subtract t
+              :half-carry nil ; todo
+              :carry (minusp full)))
   (increment-clock gameboy))
 
-(defun op-nop (gameboy)
+(define-opcode op-push-bc
+  (write-8 gameboy (decf sp) b)
+  (write-8 gameboy (decf sp) c)
+  (increment-clock gameboy 3))
+
+(define-opcode op-pop-hl
+  (setf l (read-8 gameboy sp))
+  (incf sp)
+  (setf h (read-8 gameboy sp))
+  (incf sp)
+  (increment-clock gameboy 3))
+
+(define-opcode ld-a-mem
+  (setf a (read-8 gameboy pc))
+  (incf pc 2)
+  (increment-clock gameboy 4))
+
+(define-opcode op-nop
   (increment-clock gameboy))
+
+
+;;;; VM -----------------------------------------------------------------------
+(defun reset (gameboy)
+  (with-gameboy (gameboy)
+    (setf a 0 b 0 c 0 d 0 e 0 h 0 l 0 f 0 sp 0 pc 0 clock-m 0 clock-t 0)))
+
+
+(defparameter *running* t)
+
+(defparameter *opcode-list*
+  '(#'op-nop
+    #'op-add-e
+    ; ...
+    ))
+
+(defparameter *opcodes*
+  (make-array (length *opcode-list*)
+    :initial-contents *opcode-list*
+    :adjustable nil
+    :fill-pointer nil))
+
+
+(defun run (gameboy)
+  (with-gameboy (gameboy)
+    (iterate
+      (while *running*)
+      (for op = (aref *opcodes* (read-8 gameboy pc)))
+      (incf pc)
+      (funcall op gameboy)
+      (zapf pc (chop-16 %))
+      (setf clock-m cm
+            clock-t ct))))
+
+
+
+
+
+
+
+
+
 
