@@ -73,7 +73,7 @@
 
 
 ;;;; Bit Fuckery --------------------------------------------------------------
-(declaim (inline to-bit chop-8 chop-16))
+(declaim (inline to-bit chop-8 chop-16 cat))
 
 (defun to-bit (value)
   (if value 1 0))
@@ -83,6 +83,9 @@
 
 (defun chop-16 (value)
   (ldb (byte 16 0) value))
+
+(defun cat (low-order high-order)
+  (dpb high-order (byte 8 8) low-order))
 
 
 ;;;; Flag Register ------------------------------------------------------------
@@ -160,8 +163,8 @@
       0)))
 
 (defun read-16 (gameboy address)
-  (dpb (read-8 gameboy (1+ address)) (byte 8 8)
-       (read-8 gameboy address)))
+  (cat (read-8 gameboy address)
+       (read-8 gameboy (1+ address))))
 
 (defun write-8 (gameboy address value)
   (multiple-value-bind (array address) (find-memory gameboy address)
@@ -188,6 +191,84 @@
   `(defun ,name (gameboy)
     (with-gameboy (gameboy)
       ,@body)))
+
+
+;;; Load & Store
+(defmacro macro-map ((lambda-list items) &rest body)
+  (with-gensyms (macro)
+    `(macrolet ((,macro ,(ensure-list lambda-list) ,@body))
+      ,@(iterate (for item :in items)
+                 (collect `(,macro ,@(ensure-list item)))))))
+
+(macro-map (register (b c d e h l))                         ; LD r, i
+  `(define-opcode ,(symb 'ld-r/ register '<i)
+    (setf ,register (read-8 gameboy pc))
+    (incf pc)
+    (increment-clock gameboy 2)))
+
+(macro-map ((destination source)                            ; LD r, r
+            #.(map-product #'list
+                           '(a b c d e h l)
+                           '(a b c d e h l)))
+  `(define-opcode ,(symb 'ld-r/ destination '<r/ source)
+    (setf ,destination ,source)
+    (increment-clock gameboy)))
+
+(macro-map (register (a b c d e h l))                       ; LD r, (HL)
+  `(define-opcode ,(symb 'ld-r/ register '<mem/hl)
+    (setf ,register (read-8 gameboy (cat l h)))
+    (increment-clock gameboy 2)))
+
+(macro-map (register (a b c d e h l))                       ; LD (HL), r
+  `(define-opcode ,(symb 'ld-mem/hl<r/ register)
+    (write-8 gameboy (cat l h) ,register)
+    (increment-clock gameboy 2)))
+
+(define-opcode ld-mem/hl<i                                  ; LD (HL), i
+  (write-8 gameboy (cat l h) (read-8 gameboy pc))
+  (incf pc)
+  (increment-clock gameboy 3))
+
+(define-opcode ld-mem/bc<r/a                                ; LD (BC), A
+  (write-8 gameboy (cat c b) a)
+  (increment-clock gameboy 2))
+
+(define-opcode ld-mem/de<r/a                                ; LD (DE), A
+  (write-8 gameboy (cat e d) a)
+  (increment-clock gameboy 2))
+
+(define-opcode ld-mem/i<a                                   ; LD (i), A
+  (write-8 gameboy (read-16 gameboy pc) a)
+  (incf pc 2)
+  (increment-clock gameboy 4))
+
+(define-opcode ld-r/a<mem/bc                                ; LD A, (BC)
+  (setf a (read-8 gameboy (cat c b)))
+  (increment-clock gameboy 2))
+
+(define-opcode ld-r/a<mem/de                                ; LD A, (DE)
+  (setf a (read-8 gameboy (cat e d)))
+  (increment-clock gameboy 2))
+
+(define-opcode ld-mem/i<a                                   ; LD A, (i)
+  (setf a (read-8 gameboy (read-16 gameboy pc)))
+  (incf pc 2)
+  (increment-clock gameboy 4))
+
+(macro-map ((hi lo)                                         ; LD BC/DE/HL, i
+            ((b c) (d e) (h l)))
+  `(define-opcode ,(symb 'ld-r/ (symb hi lo) '<i)
+    (setf ,lo (read-8 gameboy pc))
+    (incf pc)
+    (setf ,hi (read-8 gameboy pc))
+    (incf pc)
+    (increment-clock gameboy 3)))
+
+(define-opcode ld-r/sp<i                                    ; LD SP, i
+  (setf sp (read-16 gameboy pc))
+  (incf pc 2)
+  (increment-clock gameboy 3))
+
 
 
 (define-opcode op-add-e
