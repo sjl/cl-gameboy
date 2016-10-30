@@ -2,7 +2,7 @@
 ;;;; See http://quickutil.org for details.
 
 ;;;; To regenerate:
-;;;; (qtlc:save-utils-as "quickutils.lisp" :utilities '(:COMPOSE :CURRY :ENSURE-BOOLEAN :ENSURE-GETHASH :ENSURE-LIST :MAP-PRODUCT :MKSTR :SYMB :ONCE-ONLY :RCURRY :WITH-GENSYMS :WITH-OUTPUT-TO-FILE) :ensure-package T :package "GAMEBOY.QUICKUTILS")
+;;;; (qtlc:save-utils-as "quickutils.lisp" :utilities '(:COMPOSE :CURRY :ENSURE-BOOLEAN :ENSURE-GETHASH :ENSURE-LIST :MAP-PRODUCT :MKSTR :ONCE-ONLY :RCURRY :READ-FILE-INTO-BYTE-VECTOR :SYMB :WITH-GENSYMS :WRITE-BYTE-VECTOR-INTO-FILE) :ensure-package T :package "GAMEBOY.QUICKUTILS")
 
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (unless (find-package "GAMEBOY.QUICKUTILS")
@@ -16,10 +16,12 @@
   (setf *utilities* (union *utilities* '(:MAKE-GENSYM-LIST :ENSURE-FUNCTION
                                          :COMPOSE :CURRY :ENSURE-BOOLEAN
                                          :ENSURE-GETHASH :ENSURE-LIST :MAPPEND
-                                         :MAP-PRODUCT :MKSTR :SYMB :ONCE-ONLY
-                                         :RCURRY :STRING-DESIGNATOR
-                                         :WITH-GENSYMS :WITH-OPEN-FILE*
-                                         :WITH-OUTPUT-TO-FILE))))
+                                         :MAP-PRODUCT :MKSTR :ONCE-ONLY :RCURRY
+                                         :WITH-OPEN-FILE* :WITH-INPUT-FROM-FILE
+                                         :READ-FILE-INTO-BYTE-VECTOR :SYMB
+                                         :STRING-DESIGNATOR :WITH-GENSYMS
+                                         :WITH-OUTPUT-TO-FILE
+                                         :WRITE-BYTE-VECTOR-INTO-FILE))))
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (defun make-gensym-list (length &optional (x "G"))
     "Returns a list of `length` gensyms, each generated as if with a call to `make-gensym`,
@@ -151,15 +153,6 @@ Extracted from _On Lisp_, chapter 4."
       (dolist (a args) (princ a s))))
   
 
-  (defun symb (&rest args)
-    "Receives any number of objects, concatenates all into one string with `#'mkstr` and converts them to symbol.
-
-Extracted from _On Lisp_, chapter 4.
-
-See also: `symbolicate`"
-    (values (intern (apply #'mkstr args))))
-  
-
   (defmacro once-only (specs &body forms)
     "Evaluates `forms` with symbols specified in `specs` rebound to temporary
 variables, ensuring that each initform is evaluated only once.
@@ -209,6 +202,61 @@ with and `arguments` to `function`."
         (multiple-value-call fn (values-list more) (values-list arguments)))))
   
 
+  (defmacro with-open-file* ((stream filespec &key direction element-type
+                                                   if-exists if-does-not-exist external-format)
+                             &body body)
+    "Just like `with-open-file`, but `nil` values in the keyword arguments mean to use
+the default value specified for `open`."
+    (once-only (direction element-type if-exists if-does-not-exist external-format)
+      `(with-open-stream
+           (,stream (apply #'open ,filespec
+                           (append
+                            (when ,direction
+                              (list :direction ,direction))
+                            (when ,element-type
+                              (list :element-type ,element-type))
+                            (when ,if-exists
+                              (list :if-exists ,if-exists))
+                            (when ,if-does-not-exist
+                              (list :if-does-not-exist ,if-does-not-exist))
+                            (when ,external-format
+                              (list :external-format ,external-format)))))
+         ,@body)))
+  
+
+  (defmacro with-input-from-file ((stream-name file-name &rest args
+                                                         &key (direction nil direction-p)
+                                                         &allow-other-keys)
+                                  &body body)
+    "Evaluate `body` with `stream-name` to an input stream on the file
+`file-name`. `args` is sent as is to the call to `open` except `external-format`,
+which is only sent to `with-open-file` when it's not `nil`."
+    (declare (ignore direction))
+    (when direction-p
+      (error "Can't specifiy :DIRECTION for WITH-INPUT-FROM-FILE."))
+    `(with-open-file* (,stream-name ,file-name :direction :input ,@args)
+       ,@body))
+  
+
+  (defun read-file-into-byte-vector (pathname)
+    "Read `pathname` into a freshly allocated `(unsigned-byte 8)` vector."
+    (with-input-from-file (stream pathname :element-type '(unsigned-byte 8))
+      (let ((length (file-length stream)))
+        (assert length)
+        (let ((result (make-array length :element-type '(unsigned-byte 8))))
+          (read-sequence result stream)
+          result))))
+  
+
+  (defun symb (&rest args)
+    "Receives any number of objects, concatenates all into one string with `#'mkstr` and converts them to symbol.
+
+Extracted from _On Lisp_, chapter 4.
+
+See also: `symbolicate`"
+    (values (intern (apply #'mkstr args))))
+  
+
   (deftype string-designator ()
     "A string designator type. A string designator is either a string, a symbol,
 or a character."
@@ -253,28 +301,6 @@ unique symbol the named variable will be bound to."
     `(with-gensyms ,names ,@forms))
   
 
-  (defmacro with-open-file* ((stream filespec &key direction element-type
-                                                   if-exists if-does-not-exist external-format)
-                             &body body)
-    "Just like `with-open-file`, but `nil` values in the keyword arguments mean to use
-the default value specified for `open`."
-    (once-only (direction element-type if-exists if-does-not-exist external-format)
-      `(with-open-stream
-           (,stream (apply #'open ,filespec
-                           (append
-                            (when ,direction
-                              (list :direction ,direction))
-                            (when ,element-type
-                              (list :element-type ,element-type))
-                            (when ,if-exists
-                              (list :if-exists ,if-exists))
-                            (when ,if-does-not-exist
-                              (list :if-does-not-exist ,if-does-not-exist))
-                            (when ,external-format
-                              (list :external-format ,external-format)))))
-         ,@body)))
-  
-
   (defmacro with-output-to-file ((stream-name file-name &rest args
                                                         &key (direction nil direction-p)
                                                         &allow-other-keys)
@@ -288,9 +314,19 @@ which is only sent to `with-open-file` when it's not `nil`."
     `(with-open-file* (,stream-name ,file-name :direction :output ,@args)
        ,@body))
   
+
+  (defun write-byte-vector-into-file (bytes pathname &key (if-exists :error)
+                                                          if-does-not-exist)
+    "Write `bytes` to `pathname`."
+    (check-type bytes (vector (unsigned-byte 8)))
+    (with-output-to-file (stream pathname :if-exists if-exists
+                                          :if-does-not-exist if-does-not-exist
+                                          :element-type '(unsigned-byte 8))
+      (write-sequence bytes stream)))
+  
 (eval-when (:compile-toplevel :load-toplevel :execute)
   (export '(compose curry ensure-boolean ensure-gethash ensure-list map-product
-            mkstr symb once-only rcurry with-gensyms with-unique-names
-            with-output-to-file)))
+            mkstr once-only rcurry read-file-into-byte-vector symb with-gensyms
+            with-unique-names write-byte-vector-into-file)))
 
 ;;;; END OF quickutils.lisp ;;;;

@@ -11,11 +11,12 @@
                :ensure-list
                :map-product
                :mkstr
-               :symb
                :once-only
                :rcurry
+               :read-file-into-byte-vector
+               :symb
                :with-gensyms
-               :with-output-to-file
+               :write-byte-vector-into-file
 
                )
   :package "GAMEBOY.QUICKUTILS")

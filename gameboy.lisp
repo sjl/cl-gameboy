@@ -5,9 +5,45 @@
 (declaim (optimize (speed 1) (safety 3) (debug 3)))
 
 
+;;;; Types --------------------------------------------------------------------
 (deftype int8 () '(unsigned-byte 8))
 (deftype int16 () '(unsigned-byte 16))
+(deftype memory-array () '(simple-array int8 (*)))
 
+
+;;;; Utils --------------------------------------------------------------------
+(declaim (inline k))
+
+(defun k (n)
+  (* 1024 n))
+
+(defun make-mem (size)
+  (make-array size
+    :element-type 'int8
+    :initial-element 0
+    :adjustable nil
+    :fill-pointer nil))
+
+(defmacro case-range (value &rest exprs)
+  (once-only (value)
+    `(cond
+      ,@(iterate
+         (for (condition . body) :in exprs)
+         (if (eq t condition)
+           (collect `(t ,@body))
+           (progn (collect condition :into prefixes)
+                  (collect `((< ,value (+ ,@(copy-seq prefixes)))
+                             ,@body))))))))
+
+
+;;;; Data ---------------------------------------------------------------------
+(defstruct mmu
+  (in-bios t :type boolean)
+  (bios (make-mem 256) :type memory-array :read-only t)
+  (rom (make-mem (k 16)) :type memory-array :read-only t)
+  (working-ram (make-mem (k 8)) :type memory-array :read-only t)
+  (external-ram (make-mem (k 8)) :type memory-array :read-only t)
+  (zero-page-ram (make-mem 128) :type memory-array :read-only t))
 
 (defstruct (gameboy (:conc-name gb-))
   (clock-m 0 :type int8)
@@ -23,7 +59,12 @@
   (pc 0 :type int16)
   (sp 0 :type int16)
   (cm 0 :type int8)
-  (ct 0 :type int8))
+  (ct 0 :type int8)
+  (mmu (make-mmu) :type mmu))
+
+
+(define-with-macro (mmu)
+  in-bios bios rom working-ram external-ram zero-page-ram)
 
 (define-with-macro (gameboy :conc-name gb)
   a b c d e h l f cm ct pc sp clock-m clock-t)
@@ -64,7 +105,7 @@
                 (ash (to-bit carry) 4))))
 
 
-;;;; Utils --------------------------------------------------------------------
+;;;; More Utils ---------------------------------------------------------------
 (declaim (inline increment-clock))
 
 (defun increment-clock (gameboy &optional (m 1))
@@ -79,21 +120,66 @@
 
 
 ;;;; Memory -------------------------------------------------------------------
+(declaim
+  (ftype (function (gameboy int16) (values t t)) find-memory read-8 read-16)
+  (ftype (function (gameboy int16 int8)) write-8)
+  (ftype (function (gameboy int16 int16)) write-16))
+
+(defun find-memory (gameboy address)
+  (with-mmu ((gb-mmu gameboy))
+    (case-range address
+      ;; BIOS/ROM
+      (256 (values (if in-bios bios rom) address))
+      ((- (k 32) 256) (values rom address))
+
+      ;; VRAM/ERAM/WRAM
+      ((k 8) (values nil nil)) ; todo: vram
+      ((k 8) (values external-ram (ldb (byte 13 0) address)))
+      ((k 8) (values working-ram (ldb (byte 13 0) address)))
+      ((- (k 8) 512) ; Shadow WRAM
+       (values working-ram (ldb (byte 13 0) address)))
+
+      ;; OAM
+      (160 (values nil nil)) ; todo: oam
+      ((- 256 160) (values nil nil)) ; todo: constant 0
+
+      ;; I/O
+      (128 (values nil nil)) ; todo: i/o
+
+      ;; Zero Page
+      (128 (values zero-page-ram (ldb (byte 7 0) address)))
+
+      ;; Wat
+      (t (error "Bad memory address: ~X" address)))))
+
 (defun read-8 (gameboy address)
-  ;todo
-  )
+  (multiple-value-bind (array address) (find-memory gameboy address)
+    (if array
+      (aref array address)
+      0)))
 
 (defun read-16 (gameboy address)
-  ;todo
-  )
+  (dpb (read-8 gameboy (1+ address)) (byte 8 8)
+       (read-8 gameboy address)))
 
 (defun write-8 (gameboy address value)
-  ;todo
-  )
+  (multiple-value-bind (array address) (find-memory gameboy address)
+    (if array
+      (setf (aref array address) value)
+      (error "Cannot write to memory address ~X" address))))
 
 (defun write-16 (gameboy address value)
-  ;todo
-  )
+  (write-8 gameboy address (ldb (byte 8 0) value))
+  (write-8 gameboy (1+ address) (ldb (byte 8 8) value)))
+
+
+;;;; ROMs ---------------------------------------------------------------------
+(defun load-rom (gameboy filename)
+  (replace (-> gameboy gb-mmu mmu-rom)
+           (read-file-into-byte-vector filename)))
+
+(defun clear-rom (gameboy)
+  (fill (-> gameboy gb-mmu mmu-rom) 0))
 
 
 ;;;; Opcodes ------------------------------------------------------------------
