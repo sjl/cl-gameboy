@@ -1,14 +1,33 @@
 (in-package :gameboy)
 
 
+(setf *print-length* 24)
 (declaim (optimize (speed 3) (safety 0) (debug 0)))
 (declaim (optimize (speed 1) (safety 3) (debug 3)))
 
 
-;;;; Types --------------------------------------------------------------------
+;;;; Types & Constants --------------------------------------------------------
 (deftype int8 () '(unsigned-byte 8))
 (deftype int16 () '(unsigned-byte 16))
 (deftype memory-array () '(simple-array int8 (*)))
+
+(defparameter *bios*
+  '(#x31 #xFE #xFF #xAF #x21 #xFF #x9F #x32 #xCB #x7C #x20 #xFB #x21 #x26 #xFF #x0E
+    #x11 #x3E #x80 #x32 #xE2 #x0C #x3E #xF3 #xE2 #x32 #x3E #x77 #x77 #x3E #xFC #xE0
+    #x47 #x11 #x04 #x01 #x21 #x10 #x80 #x1A #xCD #x95 #x00 #xCD #x96 #x00 #x13 #x7B
+    #xFE #x34 #x20 #xF3 #x11 #xD8 #x00 #x06 #x08 #x1A #x13 #x22 #x23 #x05 #x20 #xF9
+    #x3E #x19 #xEA #x10 #x99 #x21 #x2F #x99 #x0E #x0C #x3D #x28 #x08 #x32 #x0D #x20
+    #xF9 #x2E #x0F #x18 #xF3 #x67 #x3E #x64 #x57 #xE0 #x42 #x3E #x91 #xE0 #x40 #x04
+    #x1E #x02 #x0E #x0C #xF0 #x44 #xFE #x90 #x20 #xFA #x0D #x20 #xF7 #x1D #x20 #xF2
+    #x0E #x13 #x24 #x7C #x1E #x83 #xFE #x62 #x28 #x06 #x1E #xC1 #xFE #x64 #x20 #x06
+    #x7B #xE2 #x0C #x3E #x87 #xF2 #xF0 #x42 #x90 #xE0 #x42 #x15 #x20 #xD2 #x05 #x20
+    #x4F #x16 #x20 #x18 #xCB #x4F #x06 #x04 #xC5 #xCB #x11 #x17 #xC1 #xCB #x11 #x17
+    #x05 #x20 #xF5 #x22 #x23 #x22 #x23 #xC9 #xCE #xED #x66 #x66 #xCC #x0D #x00 #x0B
+    #x03 #x73 #x00 #x83 #x00 #x0C #x00 #x0D #x00 #x08 #x11 #x1F #x88 #x89 #x00 #x0E
+    #xDC #xCC #x6E #xE6 #xDD #xDD #xD9 #x99 #xBB #xBB #x67 #x63 #x6E #x0E #xEC #xCC
+    #xDD #xDC #x99 #x9F #xBB #xB9 #x33 #x3E #x3c #x42 #xB9 #xA5 #xB9 #xA5 #x42 #x4C
+    #x21 #x04 #x01 #x11 #xA8 #x00 #x1A #x13 #xBE #x20 #xFE #x23 #x7D #xFE #x34 #x20
+    #xF5 #x06 #x19 #x78 #x86 #x23 #x05 #x20 #xFB #x86 #x20 #xFE #x3E #x01 #xE0 #x50))
 
 
 ;;;; Utils --------------------------------------------------------------------
@@ -21,6 +40,13 @@
   (make-array size
     :element-type 'int8
     :initial-element 0
+    :adjustable nil
+    :fill-pointer nil))
+
+(defun make-bios ()
+  (make-array 256
+    :element-type 'int8
+    :initial-contents *bios*
     :adjustable nil
     :fill-pointer nil))
 
@@ -39,7 +65,7 @@
 ;;;; Data ---------------------------------------------------------------------
 (defstruct mmu
   (in-bios t :type boolean)
-  (bios (make-mem 256) :type memory-array :read-only t)
+  (bios (make-bios) :type memory-array :read-only t)
   (rom (make-mem (k 16)) :type memory-array :read-only t)
   (working-ram (make-mem (k 8)) :type memory-array :read-only t)
   (external-ram (make-mem (k 8)) :type memory-array :read-only t)
