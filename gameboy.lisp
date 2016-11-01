@@ -71,6 +71,13 @@
   (external-ram (make-mem (k 8)) :type memory-array :read-only t)
   (zero-page-ram (make-mem 128) :type memory-array :read-only t))
 
+(defstruct gpu
+  (renderer #'identity :type function)
+  (framebuffer (make-mem (* 160 144)))
+  (mode 0 :type (integer 0 3))
+  (clock 0 :type fixnum) ; fuck it, close enough
+  (line 0 :type (integer 0 (144))))
+
 (defstruct (gameboy (:conc-name gb-))
   (clock 0 :type int8)
   (clock-increment 0 :type int8)
@@ -84,11 +91,15 @@
   (f 0 :type int8)
   (pc 0 :type int16)
   (sp 0 :type int16)
-  (mmu (make-mmu) :type mmu))
+  (mmu (make-mmu) :type mmu)
+  (gpu (make-gpu) :type gpu))
 
 
 (define-with-macro (mmu)
   in-bios bios rom working-ram external-ram zero-page-ram)
+
+(define-with-macro (gpu)
+  renderer framebuffer mode clock line)
 
 (define-with-macro (gameboy :conc-name gb)
   a b c d e h l f pc sp clock clock-increment)
@@ -210,6 +221,46 @@
 
 (defun clear-rom (gameboy)
   (fill (-> gameboy gb-mmu mmu-rom) 0))
+
+
+;;;; Graphics -----------------------------------------------------------------
+(defun blit-scanline (gpu)
+  nil)
+
+(defun step-gpu (gpu cycles)
+  "Step the GPU.
+
+  `cycles` should be given in CPU cycles.
+
+  "
+  (with-gpu (gpu)
+    (incf clock cycles)
+    (case mode
+      ;; HBlank
+      (0 (when (>= clock 204)
+           ;; Once HBlank is finished, increment the line and flip back to OAM
+           ;; mode.  Unless this was the LAST line, then render the frame to the
+           ;; physical screen and go into VBlank instead.
+           (setf clock 0)
+           (if (= line 143)
+             (progn (funcall renderer gpu)
+                    (setf mode 1))
+             (incf line))))
+      ;; VBlank
+      (1 (when (>= clock 4560)
+           ;; todo: can we do away with the extra bullshit lines here or is this
+           ;; gonna cause problems?
+           (setf line 0 mode 2)))
+      ;; Scan (OAM)
+      (2 (when (>= clock 80)
+           ;; When the OAM portion of the scanline is done, just flip the mode.
+           (setf clock 0 mode 3)))
+      ;; Scan (VRAM)
+      (3 (when (>= clock 80)
+           ;; When the VRAM portion of the scanline is done, flip the mode and
+           ;; also blit the scanline into the framebuffer.
+           (setf clock 0 mode 0)
+           (blit-scanline gpu))))))
 
 
 ;;;; Opcodes ------------------------------------------------------------------
@@ -338,6 +389,7 @@
 
 ;;;; VM -----------------------------------------------------------------------
 (defun reset (gameboy)
+  ;; todo: zero out mmu/gpu arrays
   (with-gameboy (gameboy)
     (setf a 0 b 0 c 0 d 0 e 0 h 0 l 0 f 0 sp 0 pc 0 clock 0)))
 
