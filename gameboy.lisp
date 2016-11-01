@@ -544,10 +544,13 @@
 
 
 ;;; Arithmetic
-(defmacro operate-into% (operation destination source carry)
+(defmacro operate-into% (operation destination source carry &key
+                         ignore-result)
   `(multiple-value-bind (result zero subtract half-carry carry)
     (,operation ,destination ,source ,carry)
-    (setf ,destination result)
+    ,(if ignore-result
+       '(declare (ignore result))
+       `(setf ,destination result))
     (set-flag gameboy
               :zero zero
               :subtract subtract
@@ -555,29 +558,23 @@
               :carry carry)))
 
 
-(macro-map ((register with-carry)                           ; ADD/ADC A, r
-            #.(map-product #'list '(a b c d e h l) '(nil t)))
-  `(define-opcode ,(symb (if with-carry 'adc 'add) '-r/a<r/ register)
-    (operate-into% +_8 a ,register ,(if with-carry 'flag-carry 0))
-    (increment-clock gameboy 1)))
-
-(define-opcode add-r/a<mem/hl                               ; ADD A, (HL)
-  (operate-into% +_8 a (read-8 gameboy hl) 0)
-  (increment-clock gameboy 2))
-
-(define-opcode add-r/a<i                                    ; ADD A, i
-  (operate-into% +_8 a (read-8 gameboy pc) 0)
-  (increment-pc gameboy)
-  (increment-clock gameboy 2))
-
-(define-opcode adc-r/a<mem/hl                               ; ADC A, (HL)
-  (operate-into% +_8 a (read-8 gameboy hl) flag-carry)
-  (increment-clock gameboy 2))
-
-(define-opcode adc-r/a<i                                    ; ADC A, i
-  (operate-into% +_8 a (read-8 gameboy pc) flag-carry)
-  (increment-pc gameboy)
-  (increment-clock gameboy 2))
+(macro-map                                                  ; ADD/ADC A, *
+  (((name source &optional (clock 1) (pc nil)) with-carry)
+   #.(map-product #'list '((r/a    a)
+                           (r/b    b)
+                           (r/c    c)
+                           (r/d    d)
+                           (r/e    e)
+                           (r/h    h)
+                           (r/l    l)
+                           (mem/hl (read-8 gameboy hl) 2)
+                           (i      (read-8 gameboy pc) 2 t))
+                  '(nil t)))
+  `(define-opcode ,(symb (if with-carry 'adc 'add) '-r/a< name)
+    (operate-into% +_8 a ,source
+                   ,(if with-carry 'flag-carry 0))
+    ,@(when pc `((increment-pc gameboy)))
+    (increment-clock gameboy ,clock)))
 
 (macro-map (register (bc de hl sp))                         ; ADD HL, BC/DE/HL/SP
   `(define-opcode ,(symb 'add-r/hl<r/ register)
@@ -604,30 +601,40 @@
   (increment-clock gameboy 4))
 
 
-(macro-map ((register with-carry)                           ; SUB/SBC A, r
-            #.(map-product #'list '(a b c d e h l) '(nil t)))
-  `(define-opcode ,(symb (if with-carry 'sbc 'sub) '-r/a<r/ register)
-    (operate-into% -_8 a ,register ,(if with-carry 'flag-carry 0))
-    (increment-clock gameboy 1)))
+(macro-map                                                  ; SUB/SBC A, *
+  (((name source &optional (clock 1) (pc nil)) with-carry)
+   #.(map-product #'list '((r/a    a)
+                           (r/b    b)
+                           (r/c    c)
+                           (r/d    d)
+                           (r/e    e)
+                           (r/h    h)
+                           (r/l    l)
+                           (mem/hl (read-8 gameboy hl) 2)
+                           (i      (read-8 gameboy pc) 2 t))
+                  '(nil t)))
+  `(define-opcode ,(symb (if with-carry 'sbc 'sub) '-r/a< name)
+    (operate-into% -_8 a ,source
+                   ,(if with-carry 'flag-carry 0))
+    ,@(when pc `((increment-pc gameboy)))
+    (increment-clock gameboy ,clock)))
 
-(define-opcode sub-r/a<mem/hl                               ; SUB A, (HL)
-  (operate-into% -_8 a (read-8 gameboy hl) 0)
-  (increment-clock gameboy 2))
 
-(define-opcode sub-r/a<i                                    ; SUB A, i
-  (operate-into% -_8 a (read-8 gameboy pc) 0)
-  (increment-pc gameboy)
-  (increment-clock gameboy 2))
-
-(define-opcode sbc-r/a<mem/hl                               ; SBC A, (HL)
-  (operate-into% -_8 a (read-8 gameboy hl) flag-carry)
-  (increment-clock gameboy 2))
-
-(define-opcode sbc-r/a<i                                    ; SBC A, i
-  (operate-into% -_8 a (read-8 gameboy pc) flag-carry)
-  (increment-pc gameboy)
-  (increment-clock gameboy 2))
-
+(macro-map                                                  ; CP A, *
+    ((name source &optional (clock 1) (pc nil))
+     ((r/a    a)
+      (r/b    b)
+      (r/c    c)
+      (r/d    d)
+      (r/e    e)
+      (r/h    h)
+      (r/l    l)
+      (mem/hl (read-8 gameboy hl) 2)
+      (i      (read-8 gameboy pc) 2 t)))
+  `(define-opcode ,(symb 'cp-r/a= name)
+    (operate-into% -_8 a ,source 0 :ignore-result t)
+    ,@(when pc `((increment-pc gameboy)))
+    (increment-clock gameboy ,clock)))
 
 
 ;;;; VM -----------------------------------------------------------------------
