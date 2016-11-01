@@ -71,26 +71,42 @@
 
 
 ;;;; Bit Fuckery --------------------------------------------------------------
-(declaim (inline to-bit
+(declaim (inline to-bit set-bit
                  cat cat-nibbles
                  swap-nibbles
-                 chop-8 chop-16
-                 unsigned-to-signed-8))
+                 chop-4 chop-8 chop-12 chop-16
+                 unsigned-to-signed-8
+                 +_8 +_16))
+
+(declaim (ftype (function ((integer 0 (16)) int16 bit) int16)
+                set-bit))
 
 (defun to-bit (value)
   (if value 1 0))
 
+(defun set-bit (position integer value)
+  (dpb value (byte 1 position) integer))
+
+
+(defun chop-4 (value)
+  (ldb (byte 4 0) value))
+
 (defun chop-8 (value)
   (ldb (byte 8 0) value))
 
+(defun chop-12 (value)
+  (ldb (byte 12 0) value))
+
 (defun chop-16 (value)
   (ldb (byte 16 0) value))
+
 
 (defun cat (low-order high-order)
   (dpb high-order (byte 8 8) low-order))
 
 (defun cat-nibbles (low-order high-order)
   (dpb high-order (byte 4 4) low-order))
+
 
 (defmacro incf-8 (place &optional (amount 1))
   `(zapf ,place (chop-8 (+ % ,amount))))
@@ -104,10 +120,12 @@
 (defmacro decf-16 (place &optional (amount 1))
   `(zapf ,place (chop-16 (- % ,amount))))
 
+
 (defun unsigned-to-signed-8 (i)
   (if (logbitp 7 i)
     (- (chop-8 (1+ (lognot i))))
     i))
+
 
 (defmacro with-chopped-8 ((full-symbol truncated-symbol expr) &body body)
   `(let* ((,full-symbol ,expr)
@@ -119,9 +137,32 @@
           (,truncated-symbol (chop-16 ,full-symbol)))
     ,@body))
 
+
 (defun swap-nibbles (byte)
   (cat-nibbles (ldb (byte 4 4) byte)
                (ldb (byte 4 0) byte)))
+
+
+(declaim (ftype (function (int8 int8 &optional bit)
+                          (values int8 boolean boolean boolean &optional))
+                +_8)
+         (ftype (function (int16 int16 &optional bit)
+                          (values int16 boolean boolean boolean &optional))
+                +_16))
+
+(defun +_8 (x y &optional (c 0))
+  (with-chopped-8 (full trunc (+ x y c))
+    (values trunc
+            (zerop trunc)
+            (> (+ (chop-4 x) (chop-4 y) c) #xF)
+            (> full #xFF))))
+
+(defun +_16 (x y &optional (c 0))
+  (with-chopped-16 (full trunc (+ x y c))
+    (values trunc
+            (zerop trunc)
+            (> (+ (chop-12 x) (chop-12 y) c) #xFFF)
+            (> full #xFFFF))))
 
 
 ;;;; Data ---------------------------------------------------------------------
@@ -184,7 +225,7 @@
   renderer framebuffer mode clock line)
 
 (define-with-macro (gameboy :conc-name gb)
-  a b c d e h l f pc sp clock clock-increment af bc de hl)
+  a b c d e h l f pc sp clock clock-increment af bc de hl flag-carry)
 
 
 (defmethod print-object ((object gameboy) stream)
@@ -195,22 +236,36 @@
 (declaim (inline set-flag))
 
 (defmacro define-flag (name position)
-  `(defun ,(symb 'gb-flag- name) (gameboy)
-    (ldb (byte 1 ,position)
-         (gb-f gameboy))))
+  (let ((full-name (symb 'gb-flag- name)))
+    `(progn
+      (declaim (inline ,full-name)
+               (ftype (function (gameboy) bit)
+                      ,full-name))
+      (defun ,full-name (gameboy)
+        (ldb (byte 1 ,position)
+             (gb-f gameboy))))))
 
 (define-flag zero 7)
 (define-flag subtract 6)
 (define-flag half-carry 5)
 (define-flag carry 4)
 
-(defun set-flag (gameboy &key zero subtract half-carry carry)
+(declaim (ftype (function
+                  (gameboy &key (:zero t) (:subtract t) (:half-carry t) (:carry t))
+                  int8)
+                set-flag))
+
+(defun set-flag (gameboy &key
+                 (zero (gb-flag-zero gameboy))
+                 (subtract (gb-flag-subtract gameboy))
+                 (half-carry (gb-flag-half-carry gameboy))
+                 (carry (gb-flag-carry gameboy)))
   (setf (gb-f gameboy)
-        (logior 0
-                (ash (to-bit zero) 7)
-                (ash (to-bit subtract) 6)
-                (ash (to-bit half-carry) 5)
-                (ash (to-bit carry) 4))))
+        (-<> 0
+          (set-bit 7 <> (to-bit zero))
+          (set-bit 6 <> (to-bit subtract))
+          (set-bit 5 <> (to-bit half-carry))
+          (set-bit 4 <> (to-bit carry)))))
 
 
 ;;;; More Utils ---------------------------------------------------------------
@@ -450,6 +505,8 @@
     (with-chopped-16 (full trunc (+ sp offset))
       (setf hl trunc)
       (set-flag gameboy
+                :zero nil
+                :subtract nil
                 :half-carry nil ; todo
                 :carry (> full 255))))
   (increment-pc gameboy)
@@ -463,7 +520,8 @@
     (-<> ,register
       (swap-nibbles <>)
       (setf ,register <>)
-      (set-flag gameboy :zero <>))
+      (set-flag gameboy :zero <>
+                :subtract nil :half-carry nil :carry nil))
     (increment-clock gameboy 2)))
 
 (define-opcode swap-mem/hl                                  ; SWAP (HL)
@@ -471,7 +529,68 @@
     (read-8 gameboy <>)
     (swap-nibbles <>)
     (write-8 gameboy hl <>)
-    (set-flag gameboy :zero <>))
+    (set-flag gameboy :zero <>
+              :subtract nil :half-carry nil :carry nil))
+  (increment-clock gameboy 4))
+
+
+;;; Addition
+(defmacro add-into% (addition-function destination source carry)
+  `(multiple-value-bind (result zero half-carry carry)
+    (,addition-function ,destination ,source ,carry)
+    (setf ,destination result)
+    (set-flag gameboy
+              :zero zero
+              :subtract nil
+              :half-carry half-carry
+              :carry carry)))
+
+(macro-map ((register with-carry)                           ; ADD/ADC A, r
+            #.(map-product #'list '(a b c d e h l) '(nil t)))
+  `(define-opcode ,(symb (if with-carry 'adc 'add) '-r/a<r/ register)
+    (add-into% +_8 a ,register ,(if with-carry 'flag-carry 0))
+    (increment-clock gameboy 1)))
+
+(define-opcode add-r/a<mem/hl                               ; ADD A, (HL)
+  (add-into% +_8 a (read-8 gameboy hl) 0)
+  (increment-clock gameboy 2))
+
+(define-opcode add-r/a<mem/hl                               ; ADD A, i
+  (add-into% +_8 a (read-8 gameboy pc) 0)
+  (increment-pc gameboy)
+  (increment-clock gameboy 2))
+
+(define-opcode add-r/a<mem/hl                               ; ADC A, (HL)
+  (add-into% +_8 a (read-8 gameboy hl) flag-carry)
+  (increment-clock gameboy 2))
+
+(define-opcode add-r/a<mem/hl                               ; ADC A, i
+  (add-into% +_8 a (read-8 gameboy pc) flag-carry)
+  (increment-pc gameboy)
+  (increment-clock gameboy 2))
+
+(macro-map (register (bc de hl sp))                         ; ADD HL, BC/DE/HL/SP
+  `(define-opcode ,(symb 'add-r/hl<r/ register)
+    (multiple-value-bind (result zero half-carry carry)
+        (+_16 hl ,register)
+      (declare (ignore zero))
+      (setf hl result)
+      (set-flag gameboy
+                ; the zero flag isn't affected here for some weird fuckin' reason
+                :subtract nil
+                :half-carry half-carry
+                :carry carry))
+    (increment-clock gameboy 2)))
+
+(define-opcode add-r/sp<i                                   ; ADD SP, i
+  ; todo this hole thing is fucked, especially the flags, fix later
+  (incf-16 sp (unsigned-to-signed-8 (read-8 gameboy pc)))
+  (set-flag gameboy
+            :zero nil ; lol what gameboy?
+            :subtract nil
+            :half-carry nil ; todo
+            :carry nil) ; todo
+  (increment-pc gameboy)
   (increment-clock gameboy 4))
 
 
