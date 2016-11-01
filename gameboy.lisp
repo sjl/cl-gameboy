@@ -71,7 +71,11 @@
 
 
 ;;;; Bit Fuckery --------------------------------------------------------------
-(declaim (inline to-bit chop-8 chop-16 cat unsigned-to-signed-8))
+(declaim (inline to-bit
+                 cat cat-nibbles
+                 swap-nibbles
+                 chop-8 chop-16
+                 unsigned-to-signed-8))
 
 (defun to-bit (value)
   (if value 1 0))
@@ -84,6 +88,9 @@
 
 (defun cat (low-order high-order)
   (dpb high-order (byte 8 8) low-order))
+
+(defun cat-nibbles (low-order high-order)
+  (dpb high-order (byte 4 4) low-order))
 
 (defmacro incf-8 (place &optional (amount 1))
   `(zapf ,place (chop-8 (+ % ,amount))))
@@ -111,6 +118,10 @@
   `(let* ((,full-symbol ,expr)
           (,truncated-symbol (chop-16 ,full-symbol)))
     ,@body))
+
+(defun swap-nibbles (byte)
+  (cat-nibbles (ldb (byte 4 4) byte)
+               (ldb (byte 4 0) byte)))
 
 
 ;;;; Data ---------------------------------------------------------------------
@@ -439,13 +450,29 @@
     (with-chopped-16 (full trunc (+ sp offset))
       (setf hl trunc)
       (set-flag gameboy
-                :zero nil
-                :subtract nil
                 :half-carry nil ; todo
                 :carry (> full 255))))
   (increment-pc gameboy)
   (increment-clock gameboy 3))
 
+
+;;; Swap
+
+(macro-map (register (a b c d e h l))                       ; SWAP r
+  `(define-opcode ,(symb 'swap-r/ register)
+    (-<> ,register
+      (swap-nibbles <>)
+      (setf ,register <>)
+      (set-flag gameboy :zero <>))
+    (increment-clock gameboy 2)))
+
+(define-opcode swap-mem/hl                                  ; SWAP (HL)
+  (-<> hl
+    (read-8 gameboy <>)
+    (swap-nibbles <>)
+    (write-8 gameboy hl <>)
+    (set-flag gameboy :zero <>))
+  (increment-clock gameboy 4))
 
 
 ;;;; VM -----------------------------------------------------------------------
