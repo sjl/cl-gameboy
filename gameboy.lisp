@@ -72,6 +72,7 @@
 
 ;;;; Bit Fuckery --------------------------------------------------------------
 (declaim (inline to-bit set-bit
+                 low-nibble high-nibble
                  cat cat-nibbles
                  swap-nibbles
                  chop-4 chop-8 chop-12 chop-16
@@ -100,6 +101,13 @@
 
 (defun chop-16 (value)
   (ldb (byte 16 0) value))
+
+
+(defun low-nibble (byte)
+  (ldb (byte 4 0) byte))
+
+(defun high-nibble (byte)
+  (ldb (byte 4 4) byte))
 
 
 (defun cat (low-order high-order)
@@ -236,7 +244,8 @@
   renderer framebuffer mode clock line)
 
 (define-with-macro (gameboy :conc-name gb)
-  a b c d e h l f pc sp clock clock-increment af bc de hl flag-carry)
+  a b c d e h l f pc sp clock clock-increment af bc de hl
+  flag-zero flag-subtract flag-half-carry flag-carry)
 
 
 (defmethod print-object ((object gameboy) stream)
@@ -635,6 +644,28 @@
     (operate-into% -_8 a ,source 0 :ignore-result t)
     ,@(when pc `((increment-pc gameboy)))
     (increment-clock gameboy ,clock)))
+
+
+;;; Miscellaneous
+(define-opcode daa
+  (if flag-subtract
+    (progn (when flag-half-carry
+             (zapf a (chop-8 (- % #x06))))
+           (when flag-carry
+             (decf a #x60)))
+    (progn (when (or flag-half-carry (> (low-nibble a) 9))
+             (incf a #x06))
+           (when (or flag-carry (> (high-nibble a) 9)) ; todo check this
+             (incf a #x60))))
+  (let ((full a)
+        (trunc (chop-8 a)))
+    (set-flag gameboy
+              :zero (zerop trunc)
+              ; :subtract flag is unaffected
+              :half-carry 0
+              :carry (> full #xFF))
+    (setf a trunc))
+  (increment-clock gameboy))
 
 
 ;;;; VM -----------------------------------------------------------------------
