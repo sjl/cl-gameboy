@@ -78,7 +78,7 @@
                  chop-4 chop-8 chop-12 chop-16
                  unsigned-to-signed-8
                  +_8 -_8
-                 +_16))
+                 +_16 -_16))
 
 (declaim (ftype (function ((integer 0 (16)) int16 bit) int16)
                 set-bit))
@@ -157,7 +157,7 @@
                 +_8 -_8)
          (ftype (function (int16 int16 &optional bit)
                           (values int16 boolean boolean boolean boolean &optional))
-                +_16))
+                +_16 -_16))
 
 (defun +_8 (x y &optional (c 0))
   (with-chopped-8 (full trunc (+ x y c))
@@ -181,6 +181,14 @@
             (zerop trunc)
             t
             (< (chop-4 x) (+ c (chop-4 y)))
+            (minusp full))))
+
+(defun -_16 (x y &optional (c 0))
+  (with-chopped-16 (full trunc (- x y c))
+    (values trunc
+            (zerop trunc)
+            t
+            (< (chop-12 x) (+ c (chop-12 y)))
             (minusp full))))
 
 
@@ -649,7 +657,7 @@
     (increment-clock gameboy ,clock)))
 
 
-(macro-map                                             ; INC/DEC *
+(macro-map                                             ; INC/DEC * (8-bit)
   (((name source &optional (clock 1))
     (op-name operation))
    #.(map-product #'list
@@ -663,7 +671,7 @@
                     (mem/hl (mem-8 gameboy hl) 3))
                   '((inc +_8)
                     (dec -_8))))
-  `(define-opcode ,(symb op-name '-r/a= name)
+  `(define-opcode ,(symb op-name '- name)
     (multiple-value-bind (result zero subtract half-carry carry)
         (,operation ,source 1)
       (declare (ignore carry)) ;; carry is unaffected for some reason...
@@ -673,6 +681,19 @@
                 :subtract subtract
                 :half-carry half-carry))
     (increment-clock gameboy ,clock)))
+
+(macro-map                                             ; INC/DEC * (16-bit)
+  (((name source) (op-name operation))
+   #.(map-product #'list
+                  '((r/bc bc)
+                    (r/de de)
+                    (r/hl hl)
+                    (r/sp sp))
+                  '((inc +_16)
+                    (dec -_16))))
+  `(define-opcode ,(symb op-name '- name)
+    (setf ,source (,operation ,source 1))
+    (increment-clock gameboy 2)))
 
 
 ;;; Miscellaneous
