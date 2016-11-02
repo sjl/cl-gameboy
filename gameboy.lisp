@@ -305,7 +305,8 @@
   (ftype (function (gameboy int16) int8) read-8)
   (ftype (function (gameboy int16) int16) read-16)
   (ftype (function (gameboy int16 int8)) write-8)
-  (ftype (function (gameboy int16 int16)) write-16))
+  (ftype (function (gameboy int16 int16)) write-16)
+  (inline (setf read-8) (setf read-16)))
 
 (defun find-memory (gameboy address)
   (with-mmu ((gb-mmu gameboy))
@@ -353,6 +354,12 @@
 (defun write-16 (gameboy address value)
   (write-8 gameboy address (ldb (byte 8 0) value))
   (write-8 gameboy (1+ address) (ldb (byte 8 8) value)))
+
+(defun (setf read-8) (value gameboy address)
+  (write-8 gameboy address value))
+
+(defun (setf read-16) (value gameboy address)
+  (write-16 gameboy address value))
 
 
 ;;;; ROMs ---------------------------------------------------------------------
@@ -585,6 +592,7 @@
     ,@(when pc `((increment-pc gameboy)))
     (increment-clock gameboy ,clock)))
 
+
 (macro-map (register (bc de hl sp))                    ; ADD HL, BC/DE/HL/SP
   `(define-opcode ,(symb 'add-r/hl<r/ register)
     (multiple-value-bind (result zero half-carry carry)
@@ -643,6 +651,32 @@
   `(define-opcode ,(symb 'cp-r/a= name)
     (operate-into% -_8 a ,source 0 :ignore-result t)
     ,@(when pc `((increment-pc gameboy)))
+    (increment-clock gameboy ,clock)))
+
+
+(macro-map                                             ; INC/DEC *
+  (((name source &optional (clock 1))
+    (op-name operation))
+   #.(map-product #'list
+                  '((r/a    a)
+                    (r/b    b)
+                    (r/c    c)
+                    (r/d    d)
+                    (r/e    e)
+                    (r/h    h)
+                    (r/l    l)
+                    (mem/hl (read-8 gameboy hl) 3))
+                  '((inc +_8)
+                    (dec -_8))))
+  `(define-opcode ,(symb op-name '-r/a= name)
+    (multiple-value-bind (result zero subtract half-carry carry)
+        (,operation ,source 1)
+      (declare (ignore carry)) ;; carry is unaffected for some reason...
+      (setf ,source result)
+      (set-flag gameboy
+                :zero zero
+                :subtract subtract
+                :half-carry half-carry))
     (increment-clock gameboy ,clock)))
 
 
