@@ -5,4 +5,6 @@
     :iterate
     :cl-arrows
     :gameboy.quickutils)
-  (:export))
+  (:export)
+  (:shadow :bit)
+  )

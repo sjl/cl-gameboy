@@ -12,6 +12,7 @@
 (deftype sint8 () '(signed-byte 8))
 (deftype sint16 () '(signed-byte 16))
 (deftype memory-array () '(simple-array int8 (*)))
+(deftype bit () 'cl:bit)
 
 (defparameter *bios*
   '(#x31 #xFE #xFF #xAF #x21 #xFF #x9F #x32 #xCB #x7C #x20 #xFB #x21 #x26 #xFF #x0E
@@ -71,7 +72,7 @@
 
 
 ;;;; Bit Fuckery --------------------------------------------------------------
-(declaim (inline to-bit set-bit
+(declaim (inline to-bit set-bit bit
                  low-nibble high-nibble
                  cat
                  swap-nibbles
@@ -82,13 +83,19 @@
                  rot))
 
 (declaim (ftype (function ((integer 0 (16)) int16 bit) int16)
-                set-bit))
+                set-bit)
+         (ftype (function ((integer 0 (16)) int16) bit)
+                bit))
+
 
 (defun to-bit (value)
   (if value 1 0))
 
 (defun set-bit (position integer value)
   (dpb value (byte 1 position) integer))
+
+(defun bit (position integer)
+  (ldb (byte 1 position) integer))
 
 
 (defun chop-4 (value)
@@ -286,8 +293,7 @@
                (ftype (function (gameboy) bit)
                       ,full-name))
       (defun ,full-name (gameboy)
-        (ldb (byte 1 ,position)
-             (gb-f gameboy))))))
+        (bit ,position (gb-f gameboy))))))
 
 (define-flag zero 7)
 (define-flag subtract 6)
@@ -434,7 +440,7 @@
 (defmacro define-opcode (name &rest body)
   `(progn
     (declaim (ftype (function (gameboy) gameboy) ,name))
-    (defun ,name (gameboy)
+    (defun ,(symb 'op- name) (gameboy)
       (with-gameboy (gameboy)
         ,@body)
       gameboy)))
@@ -828,7 +834,7 @@
                 :zero (zerop trunc)
                 :subtract nil
                 :half-carry nil
-                :carry (ldb (byte 1 8) full))
+                :carry (bit 8 full))
       (setf ,source trunc))
     (increment-clock gameboy ,clock)))
 
@@ -855,8 +861,74 @@
                 :zero (zerop result)
                 :subtract nil
                 :half-carry nil
-                :carry (ldb (byte 1 7) a))
+                :carry (bit 7 a))
       (setf ,source result))
+    (increment-clock gameboy ,clock)))
+
+
+;;; Shift
+(macro-map                                             ; SLA *
+  ((name source &optional (clock 2))
+   ((r/a    a)
+    (r/b    b)
+    (r/c    c)
+    (r/d    d)
+    (r/e    e)
+    (r/h    h)
+    (r/l    l)
+    (mem/hl (mem-8 gameboy hl) 4)))
+  `(define-opcode ,(symb 'sla- name)
+    (with-chopped-8 (full trunc (ash ,source 1))
+      (set-flag gameboy
+                :zero (zerop trunc)
+                :subtract nil
+                :half-carry nil
+                :carry (bit 8 full))
+      (setf ,source trunc))
+    (increment-clock gameboy ,clock)))
+
+(macro-map                                             ; SRA *
+  ((name source &optional (clock 2))
+   ((r/a    a)
+    (r/b    b)
+    (r/c    c)
+    (r/d    d)
+    (r/e    e)
+    (r/h    h)
+    (r/l    l)
+    (mem/hl (mem-8 gameboy hl) 4)))
+  `(define-opcode ,(symb 'sra- name)
+    (let ((orig ,source))
+      (with-chopped-8 (full trunc (-<> orig
+                                    (ash <> -1)
+                                    (set-bit 8 <> (bit 8 orig))))
+        (set-flag gameboy
+                  :zero (zerop trunc)
+                  :subtract nil
+                  :half-carry nil
+                  :carry (bit 0 orig))
+        (setf ,source trunc)))
+    (increment-clock gameboy ,clock)))
+
+(macro-map                                             ; SRL *
+  ((name source &optional (clock 2))
+   ((r/a    a)
+    (r/b    b)
+    (r/c    c)
+    (r/d    d)
+    (r/e    e)
+    (r/h    h)
+    (r/l    l)
+    (mem/hl (mem-8 gameboy hl) 4)))
+  `(define-opcode ,(symb 'sra- name)
+    (let* ((orig ,source)
+           (trunc (chop-8 (ash orig -1))))
+      (set-flag gameboy
+                :zero (zerop trunc)
+                :subtract nil
+                :half-carry nil
+                :carry (bit 0 orig))
+      (setf ,source trunc))
     (increment-clock gameboy ,clock)))
 
 
