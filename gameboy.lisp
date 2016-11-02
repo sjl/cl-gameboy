@@ -72,7 +72,7 @@
 
 
 ;;;; Bit Fuckery --------------------------------------------------------------
-(declaim (inline to-bit set-bit bit
+(declaim (inline to-bit set-bit bit flip
                  low-nibble high-nibble
                  cat
                  swap-nibbles
@@ -85,17 +85,24 @@
 (declaim (ftype (function ((integer 0 (16)) int16 bit) int16)
                 set-bit)
          (ftype (function ((integer 0 (16)) int16) bit)
-                bit))
+                bit)
+         (ftype (function (bit) bit) flip))
 
 
 (defun to-bit (value)
-  (if value 1 0))
+  (case value
+    ((0 nil) 0)
+    ((1 t) 1)
+    (t 1)))
 
 (defun set-bit (position integer value)
   (dpb value (byte 1 position) integer))
 
 (defun bit (position integer)
   (ldb (byte 1 position) integer))
+
+(defun flip (bit)
+  (if (zerop bit) 1 0))
 
 
 (defun chop-4 (value)
@@ -306,16 +313,21 @@
                 set-flag))
 
 (defun set-flag (gameboy &key
-                 (zero (gb-flag-zero gameboy))
-                 (subtract (gb-flag-subtract gameboy))
-                 (half-carry (gb-flag-half-carry gameboy))
-                 (carry (gb-flag-carry gameboy)))
-  (setf (gb-f gameboy)
-        (-<> 0
-          (set-bit 7 <> (to-bit zero))
-          (set-bit 6 <> (to-bit subtract))
-          (set-bit 5 <> (to-bit half-carry))
-          (set-bit 4 <> (to-bit carry)))))
+                 (zero :preserve)
+                 (subtract :preserve)
+                 (half-carry :preserve)
+                 (carry :preserve))
+  (flet ((set-flag% (flag index value)
+           (if (eq :preserve flag)
+             value
+             (set-bit index value (to-bit flag)))))
+    (declare (inline set-flag%))
+    (zapf (gb-f gameboy)
+          (-<> %
+            (set-flag% zero 7 <>)
+            (set-flag% subtract 6 <>)
+            (set-flag% half-carry 5 <>)
+            (set-flag% carry 4 <>)))))
 
 
 ;;;; More Utils ---------------------------------------------------------------
@@ -438,12 +450,13 @@
 
 ;;;; Opcodes ------------------------------------------------------------------
 (defmacro define-opcode (name &rest body)
-  `(progn
-    (declaim (ftype (function (gameboy) gameboy) ,name))
-    (defun ,(symb 'op- name) (gameboy)
-      (with-gameboy (gameboy)
-        ,@body)
-      gameboy)))
+  (let ((name (symb 'op- name)))
+    `(progn
+      (declaim (ftype (function (gameboy) gameboy) ,name))
+      (defun ,name (gameboy)
+        (with-gameboy (gameboy)
+          ,@body)
+        gameboy))))
 
 
 ;;; Load & Store
@@ -807,6 +820,27 @@
   `(define-opcode ,(symb op-name '- bit '- name)
     (zapf ,source (set-bit ,bit % ,value))
     (increment-clock gameboy ,clock)))
+
+(define-opcode cpl                                     ; CPL
+  (zapf a (chop-8 (lognot %)))
+  (set-flag gameboy
+            :subtract t
+            :half-carry t)
+  (increment-clock gameboy 1))
+
+(define-opcode ccf                                     ; CCF
+  (set-flag gameboy
+            :subtract nil
+            :half-carry nil
+            :carry (flip flag-carry))
+  (increment-clock gameboy 1))
+
+(define-opcode scf                                     ; SCF
+  (set-flag gameboy
+            :subtract nil
+            :half-carry nil
+            :carry 1)
+  (increment-clock gameboy 1))
 
 
 ;;; Rotate
