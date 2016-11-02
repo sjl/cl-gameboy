@@ -259,7 +259,8 @@
   (pc 0 :type int16)
   (sp 0 :type int16)
   (mmu (make-mmu) :type mmu)
-  (gpu (make-gpu) :type gpu))
+  (gpu (make-gpu) :type gpu)
+  (halt 0 :type int8))
 
 
 ;;; Define accessors for the AF/BC/DE/HL pseudo-registers
@@ -290,7 +291,7 @@
   renderer framebuffer mode clock line)
 
 (define-with-macro (gameboy :conc-name gb)
-  a b c d e h l f pc sp clock clock-increment af bc de hl
+  a b c d e h l f pc sp clock clock-increment af bc de hl halt
   flag-zero flag-subtract flag-half-carry flag-carry)
 
 
@@ -749,7 +750,7 @@
 
 
 ;;; Miscellaneous
-(define-opcode daa
+(define-opcode daa                                     ; DAA
   (if flag-subtract
     (progn (when flag-half-carry
              (zapf a (chop-8 (- % #x06))))
@@ -768,6 +769,13 @@
               :carry (> full #xFF))
     (setf a trunc))
   (increment-clock gameboy))
+
+(define-opcode nop                                     ; NOP
+  (increment-clock gameboy 1))
+
+(define-opcode halt                                    ; HALT
+  (setf halt 1)
+  (increment-clock gameboy 1))
 
 
 ;;; Logic
@@ -1076,6 +1084,19 @@
   (setf pc (stack-pop gameboy))
   (increment-clock gameboy 4))
 
+(macro-map                                             ; RET cond
+  ((name flag flag-value)
+   ((nz flag-zero  0)
+    (z  flag-zero  1)
+    (nc flag-carry 0)
+    (c  flag-carry 1)))
+  `(define-opcode ,(symb 'ret- name)
+    (if (= ,flag ,flag-value)
+      (progn
+        (setf pc (stack-pop gameboy))
+        (increment-clock gameboy 5))
+      (increment-clock gameboy 2))))
+
 
 ;;;; VM -----------------------------------------------------------------------
 (defun reset (gameboy)
@@ -1086,11 +1107,6 @@
 
 (defparameter *running* t)
 
-(defparameter *opcode-list*
-  '(#'op-nop
-    #'op-add-e
-    ; ...
-    ))
 
 (defparameter *opcodes*
   (make-array (length *opcode-list*)
@@ -1112,3 +1128,6 @@
 
 ;;;; TODO ---------------------------------------------------------------------
 ;;; * Automatically call opcodes with their operands
+;;; * RETI, RST* and other interrupty stuff
+;;; * STOP opcode
+;;; * DI/EI interrupt stuff
