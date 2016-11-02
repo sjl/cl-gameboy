@@ -267,6 +267,7 @@
                (ftype (function (int16 gameboy) int16) (setf ,name)))
 
       (defun ,name (gameboy)
+        ; todo fix the flag register here to always read 0 in low-order bits
         (cat (,acc-lo gameboy) (,acc-hi gameboy)))
 
       (defun (setf ,name) (value gameboy)
@@ -630,7 +631,6 @@
     ,@(when pc `((increment-pc gameboy)))
     (increment-clock gameboy ,clock)))
 
-
 (macro-map (register (bc de hl sp))                    ; ADD HL, BC/DE/HL/SP
   `(define-opcode ,(symb 'add-r/hl<r/ register)
     (multiple-value-bind (result zero half-carry carry)
@@ -655,7 +655,6 @@
   (increment-pc gameboy)
   (increment-clock gameboy 4))
 
-
 (macro-map                                             ; SUB/SBC A, *
   (((name source &optional (clock 1) (pc nil)) with-carry)
    #.(map-product #'list '((r/a    a)
@@ -674,7 +673,6 @@
     ,@(when pc `((increment-pc gameboy)))
     (increment-clock gameboy ,clock)))
 
-
 (macro-map                                             ; CP A, *
     ((name source &optional (clock 1) (pc nil))
      ((r/a    a)
@@ -690,7 +688,6 @@
     (operate-into% -_8 a ,source 0 :ignore-result t)
     ,@(when pc `((increment-pc gameboy)))
     (increment-clock gameboy ,clock)))
-
 
 (macro-map                                             ; INC/DEC * (8-bit)
   (((name source &optional (clock 1))
@@ -860,7 +857,7 @@
                   '((l 1)
                     (r -1))))
   `(define-opcode ,(symb 'r direction name)
-    (with-chopped-8 (full trunc (rot 9 (cat flag-carry ,source 1 8)
+    (with-chopped-8 (full trunc (rot 9 (cat ,source flag-carry 8 1)
                                      ,offset))
       (set-flag gameboy
                 ; todo: http://www.devrs.com/gb/files/opcodes.html says the zero
@@ -992,6 +989,49 @@
     (setf ,hi (mem-8 gameboy sp))
     (incf sp)
     (increment-clock gameboy 3)))
+
+
+;;; Jumps
+(define-opcode jp-i                                    ; JP, i
+  (setf pc (mem-16 gameboy pc))
+  (increment-clock gameboy 3))
+
+(define-opcode jp-mem/hl                               ; JP, (HL)
+  (setf pc hl)
+  (increment-clock gameboy 1))
+
+(define-opcode jr-i                                    ; JR, i
+  (incf pc (unsigned-to-signed-8 (mem-8 gameboy pc)))
+  (increment-pc gameboy)
+  (increment-clock gameboy 2))
+
+(macro-map                                             ; JP cond, i
+  ((name flag flag-value)
+   ((nz flag-zero  0)
+    (z  flag-zero  1)
+    (nc flag-carry 0)
+    (c  flag-carry 1)))
+  `(define-opcode ,(symb 'jp- name '-i)
+    (let ((target (mem-16 gameboy pc)))
+      (increment-pc gameboy 2)
+      (if (= ,flag ,flag-value)
+        (progn (setf pc target)
+               (increment-clock gameboy 3))
+        (increment-clock gameboy 2)))))
+
+(macro-map                                             ; JR cond, i
+  ((name flag flag-value)
+   ((nz flag-zero  0)
+    (z  flag-zero  1)
+    (nc flag-carry 0)
+    (c  flag-carry 1)))
+  `(define-opcode ,(symb 'jr- name '-i)
+    (let ((offset (unsigned-to-signed-8 (mem-8 gameboy pc))))
+      (increment-pc gameboy 1)
+      (if (= ,flag ,flag-value)
+        (progn (incf pc offset)
+               (increment-clock gameboy 3))
+        (increment-clock gameboy 2)))))
 
 
 ;;;; VM -----------------------------------------------------------------------
