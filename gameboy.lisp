@@ -73,7 +73,7 @@
 ;;;; Bit Fuckery --------------------------------------------------------------
 (declaim (inline to-bit set-bit
                  low-nibble high-nibble
-                 cat cat-nibbles
+                 cat
                  swap-nibbles
                  chop-4 chop-8 chop-12 chop-16
                  unsigned-to-signed-8
@@ -111,11 +111,10 @@
   (ldb (byte 4 4) byte))
 
 
-(defun cat (low-order high-order)
-  (dpb high-order (byte 8 8) low-order))
-
-(defun cat-nibbles (low-order high-order)
-  (dpb high-order (byte 4 4) low-order))
+(defun cat (low-order high-order &optional
+            (low-width 8)
+            (high-width low-width))
+  (dpb high-order (byte high-width low-width) low-order))
 
 
 (defmacro incf-8 (place &optional (amount 1))
@@ -148,9 +147,12 @@
     ,@body))
 
 
+(declaim (ftype (function (int8) int8) swap-nibbles))
+
 (defun swap-nibbles (byte)
-  (cat-nibbles (ldb (byte 4 4) byte)
-               (ldb (byte 4 0) byte)))
+  (cat (ldb (byte 4 4) byte)
+       (ldb (byte 4 0) byte)
+       4))
 
 
 (declaim (ftype (function (int8 int8 &optional bit)
@@ -198,9 +200,11 @@
          (logior (ldb (byte width 0) (ash byte n))
                  (ldb (byte n (- width n)) byte)))
         ((minusp n)
-         (dpb (ldb (byte (- n) 0) byte)
-              (byte (- n) (+ width n))
-              (ash byte n)))
+         (let ((n (- n)))
+           (cat (ash byte (- n))
+                (ldb (byte n 0) byte)
+                (- width n)
+                n)))
         (t byte)))
 
 
@@ -816,7 +820,7 @@
                   '((l 1)
                     (r -1))))
   `(define-opcode ,(symb 'r direction name)
-    (with-chopped-8 (full trunc (rot 9 (dpb flag-carry (byte 1 8) ,source)
+    (with-chopped-8 (full trunc (rot 9 (cat flag-carry ,source 1 8)
                                      ,offset))
       (set-flag gameboy
                 ; todo: http://www.devrs.com/gb/files/opcodes.html says the zero
@@ -887,13 +891,4 @@
       (incf-16 pc)
       (funcall op gameboy)
       (incf clock clock-increment))))
-
-
-
-
-
-
-
-
-
 
