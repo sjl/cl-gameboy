@@ -449,7 +449,7 @@
 
 
 ;;;; Opcodes ------------------------------------------------------------------
-(defmacro define-opcode (name &rest body)
+(defmacro define-opcode (name &body body)
   (let ((name (symb 'op- name)))
     `(progn
       (declaim (ftype (function (gameboy) gameboy) ,name))
@@ -964,6 +964,34 @@
                 :carry (bit 0 orig))
       (setf ,source trunc))
     (increment-clock gameboy ,clock)))
+
+
+;;; Stack
+(macro-map                                             ; PUSH *
+  ((name hi lo)
+   ((r/af a f)
+    (r/bc b c)
+    (r/de d e)
+    (r/hl h l)))
+  `(define-opcode ,(symb 'push- name)
+    (decf sp)
+    (setf (mem-8 gameboy sp) ,hi)
+    (decf sp)
+    (setf (mem-8 gameboy sp) ,lo)
+    (increment-clock gameboy 4)))
+
+(macro-map                                             ; POP *
+  ((name hi lo)
+   ((r/af a f)
+    (r/bc b c)
+    (r/de d e)
+    (r/hl h l)))
+  `(define-opcode ,(symb 'pop- name)
+    (setf ,lo (mem-8 gameboy sp))
+    (incf sp)
+    (setf ,hi (mem-8 gameboy sp))
+    (incf sp)
+    (increment-clock gameboy 3)))
 
 
 ;;;; VM -----------------------------------------------------------------------
