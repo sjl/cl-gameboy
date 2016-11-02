@@ -74,6 +74,7 @@
 ;;;; Bit Fuckery --------------------------------------------------------------
 (declaim (inline to-bit set-bit bit flip
                  low-nibble high-nibble
+                 low-byte high-byte
                  cat
                  swap-nibbles
                  chop-4 chop-8 chop-12 chop-16
@@ -123,6 +124,12 @@
 
 (defun high-nibble (byte)
   (ldb (byte 4 4) byte))
+
+(defun low-byte (word)
+  (ldb (byte 8 0) word))
+
+(defun high-byte (word)
+  (ldb (byte 8 8) word))
 
 
 (defun cat (low-order high-order &optional
@@ -332,7 +339,8 @@
 
 
 ;;;; More Utils ---------------------------------------------------------------
-(declaim (inline increment-clock increment-pc))
+(declaim (inline increment-clock increment-pc
+                 stack-push stack-pop))
 
 (defun increment-clock (gameboy &optional (machine-cycles 1))
   (with-gameboy (gameboy)
@@ -340,6 +348,22 @@
 
 (defun increment-pc (gameboy &optional (increment 1))
   (incf-16 (gb-pc gameboy) increment))
+
+(defun stack-push (gameboy lo hi)
+  (with-gameboy (gameboy)
+    (decf sp)
+    (setf (mem-8 gameboy sp) hi)
+    (decf sp)
+    (setf (mem-8 gameboy sp) lo)))
+
+(defun stack-pop (gameboy)
+  (with-gameboy (gameboy)
+    (values (prog1 ; lo
+                (mem-8 gameboy sp)
+              (incf sp))
+            (prog1 ; hi
+                (mem-8 gameboy sp)
+              (incf sp)))))
 
 
 ;;;; Memory -------------------------------------------------------------------
@@ -971,10 +995,7 @@
     (r/de d e)
     (r/hl h l)))
   `(define-opcode ,(symb 'push- name)
-    (decf sp)
-    (setf (mem-8 gameboy sp) ,hi)
-    (decf sp)
-    (setf (mem-8 gameboy sp) ,lo)
+    (stack-push gameboy ,lo ,hi)
     (increment-clock gameboy 4)))
 
 (macro-map                                             ; POP *
@@ -984,10 +1005,9 @@
     (r/de d e)
     (r/hl h l)))
   `(define-opcode ,(symb 'pop- name)
-    (setf ,lo (mem-8 gameboy sp))
-    (incf sp)
-    (setf ,hi (mem-8 gameboy sp))
-    (incf sp)
+    (multiple-value-bind (l h)
+        (stack-pop gameboy)
+      (setf ,lo l ,hi h))
     (increment-clock gameboy 3)))
 
 
@@ -1034,6 +1054,36 @@
         (increment-clock gameboy 2)))))
 
 
+;;; Call/Return
+(define-opcode call-i                                  ; CALL i
+  (let ((target (mem-16 gameboy pc)))
+    (increment-pc gameboy 2)
+    (stack-push gameboy ; push address of next instruction
+                (low-byte pc)
+                (high-byte pc))
+    (setf pc target)) ; jump to target
+  (increment-clock gameboy 6))
+
+(macro-map                                             ; CALL cond, i
+  ((name flag flag-value)
+   ((nz flag-zero  0)
+    (z  flag-zero  1)
+    (nc flag-carry 0)
+    (c  flag-carry 1)))
+  `(define-opcode ,(symb 'call- name '-i)
+    (let ((target (mem-16 gameboy pc)))
+      (increment-pc gameboy 2)
+      (if (= ,flag ,flag-value)
+        (progn
+          (stack-push gameboy ; push address of next instruction
+                      (low-byte pc)
+                      (high-byte pc))
+          (setf pc target)
+          (increment-clock gameboy 6))
+        (increment-clock gameboy 3)))))
+
+
+
 ;;;; VM -----------------------------------------------------------------------
 (defun reset (gameboy)
   ;; todo: zero out mmu/gpu arrays
@@ -1066,3 +1116,6 @@
       (funcall op gameboy)
       (incf clock clock-increment))))
 
+
+;;;; TODO ---------------------------------------------------------------------
+;;; * Automatically call opcodes with their operands
