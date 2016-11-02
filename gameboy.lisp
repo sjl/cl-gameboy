@@ -302,10 +302,10 @@
 ;;;; Memory -------------------------------------------------------------------
 (declaim
   (ftype (function (gameboy int16) (values t t)) find-memory)
-  (ftype (function (gameboy int16) int8) read-8)
-  (ftype (function (gameboy int16) int16) read-16)
-  (ftype (function (int8 gameboy int16)) (setf read-8))
-  (ftype (function (int16 gameboy int16)) (setf read-16)))
+  (ftype (function (gameboy int16) int8) mem-8)
+  (ftype (function (gameboy int16) int16) mem-16)
+  (ftype (function (int8 gameboy int16)) (setf mem-8))
+  (ftype (function (int16 gameboy int16)) (setf mem-16)))
 
 
 (defun find-memory (gameboy address)
@@ -336,25 +336,25 @@
       (t (error "Bad memory address: ~X" address)))))
 
 
-(defun read-8 (gameboy address)
+(defun mem-8 (gameboy address)
   (multiple-value-bind (array address) (find-memory gameboy address)
     (if array
       (aref array address)
       0)))
 
-(defun read-16 (gameboy address)
-  (cat (read-8 gameboy address)
-       (read-8 gameboy (1+ address))))
+(defun mem-16 (gameboy address)
+  (cat (mem-8 gameboy address)
+       (mem-8 gameboy (1+ address))))
 
-(defun (setf read-8) (value gameboy address)
+(defun (setf mem-8) (value gameboy address)
   (multiple-value-bind (array address) (find-memory gameboy address)
     (if array
       (setf (aref array address) value)
       (error "Cannot write to memory address ~X" address))))
 
-(defun (setf read-16) (value gameboy address)
-  (setf (read-8 gameboy address) (ldb (byte 8 0) value)
-        (read-8 gameboy (1+ address)) (ldb (byte 8 8) value)))
+(defun (setf mem-16) (value gameboy address)
+  (setf (mem-8 gameboy address) (ldb (byte 8 0) value)
+        (mem-8 gameboy (1+ address)) (ldb (byte 8 8) value)))
 
 
 ;;;; ROMs ---------------------------------------------------------------------
@@ -419,7 +419,7 @@
 ;;; Load & Store
 (macro-map (register (b c d e h l))                    ; LD r, i
   `(define-opcode ,(symb 'ld-r/ register '<i)
-    (setf ,register (read-8 gameboy pc))
+    (setf ,register (mem-8 gameboy pc))
     (increment-pc gameboy)
     (increment-clock gameboy 2)))
 
@@ -433,96 +433,96 @@
 
 (macro-map (register (a b c d e h l))                  ; LD r, (HL)
   `(define-opcode ,(symb 'ld-r/ register '<mem/hl)
-    (setf ,register (read-8 gameboy hl))
+    (setf ,register (mem-8 gameboy hl))
     (increment-clock gameboy 2)))
 
 (macro-map (register (a b c d e h l))                  ; LD (HL), r
   `(define-opcode ,(symb 'ld-mem/hl<r/ register)
-    (setf (read-8 gameboy hl) ,register)
+    (setf (mem-8 gameboy hl) ,register)
     (increment-clock gameboy 2)))
 
 (define-opcode ld-mem/hl<i                             ; LD (HL), i
-  (setf (read-8 gameboy hl) (read-8 gameboy pc))
+  (setf (mem-8 gameboy hl) (mem-8 gameboy pc))
   (increment-pc gameboy)
   (increment-clock gameboy 3))
 
 (macro-map (register (bc de))                          ; LD (BC/DE), A
   `(define-opcode ,(symb 'ld-mem/ register '<r/a)
-    (setf (read-8 gameboy ,register) a)
+    (setf (mem-8 gameboy ,register) a)
     (increment-clock gameboy 2)))
 
 (define-opcode ld-mem/i<r/a                            ; LD (i), A
-  (setf (read-8 gameboy (read-16 gameboy pc)) a)
+  (setf (mem-8 gameboy (mem-16 gameboy pc)) a)
   (increment-pc gameboy 2)
   (increment-clock gameboy 4))
 
 (macro-map (register (bc de))                          ; LD A, (BC/DE)
   `(define-opcode ,(symb 'ld-r/a<mem/ register)
-    (setf a (read-8 gameboy ,register))
+    (setf a (mem-8 gameboy ,register))
     (increment-clock gameboy 2)))
 
 (define-opcode ld-r/a<mem/i                            ; LD A, (i)
-  (setf a (read-8 gameboy (read-16 gameboy pc)))
+  (setf a (mem-8 gameboy (mem-16 gameboy pc)))
   (increment-pc gameboy 2)
   (increment-clock gameboy 4))
 
 (macro-map (register (bc de hl))                       ; LD BC/DE/HL, i
   `(define-opcode ,(symb 'ld-r/ register '<i)
     ;; todo check this
-    (setf ,register (read-16 gameboy pc))
+    (setf ,register (mem-16 gameboy pc))
     (increment-pc gameboy 2)
     (increment-clock gameboy 3)))
 
 (define-opcode ld-r/sp<i                               ; LD SP, i
-  (setf sp (read-16 gameboy pc))
+  (setf sp (mem-16 gameboy pc))
   (increment-pc gameboy 2)
   (increment-clock gameboy 3))
 
 (define-opcode ld-mem/i<r/sp                           ; LD (i), SP
-  (setf (read-16 gameboy (read-16 gameboy pc)) sp)
+  (setf (mem-16 gameboy (mem-16 gameboy pc)) sp)
   (increment-pc gameboy 2)
   (increment-clock gameboy 5))
 
 (define-opcode ldi-mem/hl<a                            ; LDI (HL), A
-  (setf (read-8 gameboy hl) a)
+  (setf (mem-8 gameboy hl) a)
   (incf-16 hl)
   (increment-clock gameboy 2))
 
 (define-opcode ldi-a<mem/hl                            ; LDI A, (HL)
-  (setf a (read-8 gameboy hl))
+  (setf a (mem-8 gameboy hl))
   (incf-16 hl)
   (increment-clock gameboy 2))
 
 (define-opcode ldd-mem/hl<a                            ; LDD (HL), A
-  (setf (read-8 gameboy hl) a)
+  (setf (mem-8 gameboy hl) a)
   (decf-16 hl)
   (increment-clock gameboy 2))
 
 (define-opcode ldd-a<mem/hl                            ; LDD A, (HL)
-  (setf a (read-8 gameboy hl))
+  (setf a (mem-8 gameboy hl))
   (decf-16 hl)
   (increment-clock gameboy 2))
 
 (define-opcode ldh-a<mem/i                             ; LDH A, (i)
-  (setf a (read-8 gameboy (+ #xff00 (read-8 gameboy pc))))
+  (setf a (mem-8 gameboy (+ #xff00 (mem-8 gameboy pc))))
   (increment-pc gameboy)
   (increment-clock gameboy 3))
 
 (define-opcode ldh-mem/i<a                             ; LDH (i), A
-  (setf (read-8 gameboy (+ #xff00 (read-8 gameboy pc))) a)
+  (setf (mem-8 gameboy (+ #xff00 (mem-8 gameboy pc))) a)
   (increment-pc gameboy)
   (increment-clock gameboy 3))
 
 (define-opcode ldh-a<mem/c                             ; LDH A, (C)
-  (setf a (read-8 gameboy (+ #xff00 c)))
+  (setf a (mem-8 gameboy (+ #xff00 c)))
   (increment-clock gameboy 2))
 
 (define-opcode ldh-mem/c<a                             ; LDH (C), A
-  (setf (read-8 gameboy (+ #xff00 c)) a)
+  (setf (mem-8 gameboy (+ #xff00 c)) a)
   (increment-clock gameboy 2))
 
 (define-opcode ld-r/hl<mem/sp+i                        ; LD HL, SP+i
-  (let ((offset (unsigned-to-signed-8 (read-8 gameboy pc))))
+  (let ((offset (unsigned-to-signed-8 (mem-8 gameboy pc))))
     (with-chopped-16 (full trunc (+ sp offset))
       (setf hl trunc)
       (set-flag gameboy
@@ -546,9 +546,9 @@
 
 (define-opcode swap-mem/hl                             ; SWAP (HL)
   (-<> hl
-    (read-8 gameboy <>)
+    (mem-8 gameboy <>)
     (swap-nibbles <>)
-    (setf (read-8 gameboy hl) <>)
+    (setf (mem-8 gameboy hl) <>)
     (set-flag gameboy :zero <>
               :subtract nil :half-carry nil :carry nil))
   (increment-clock gameboy 4))
@@ -578,8 +578,8 @@
                            (r/e    e)
                            (r/h    h)
                            (r/l    l)
-                           (mem/hl (read-8 gameboy hl) 2)
-                           (i      (read-8 gameboy pc) 2 t))
+                           (mem/hl (mem-8 gameboy hl) 2)
+                           (i      (mem-8 gameboy pc) 2 t))
                   '(nil t)))
   `(define-opcode ,(symb (if with-carry 'adc 'add) '-r/a< name)
     (operate-into% +_8 a ,source
@@ -603,7 +603,7 @@
 
 (define-opcode add-r/sp<i                              ; ADD SP, i
   ; todo this hole thing is fucked, especially the flags, fix later
-  (incf-16 sp (unsigned-to-signed-8 (read-8 gameboy pc)))
+  (incf-16 sp (unsigned-to-signed-8 (mem-8 gameboy pc)))
   (set-flag gameboy
             :zero nil ; lol what gameboy?
             :subtract nil
@@ -622,8 +622,8 @@
                            (r/e    e)
                            (r/h    h)
                            (r/l    l)
-                           (mem/hl (read-8 gameboy hl) 2)
-                           (i      (read-8 gameboy pc) 2 t))
+                           (mem/hl (mem-8 gameboy hl) 2)
+                           (i      (mem-8 gameboy pc) 2 t))
                   '(nil t)))
   `(define-opcode ,(symb (if with-carry 'sbc 'sub) '-r/a< name)
     (operate-into% -_8 a ,source
@@ -641,8 +641,8 @@
       (r/e    e)
       (r/h    h)
       (r/l    l)
-      (mem/hl (read-8 gameboy hl) 2)
-      (i      (read-8 gameboy pc) 2 t)))
+      (mem/hl (mem-8 gameboy hl) 2)
+      (i      (mem-8 gameboy pc) 2 t)))
   `(define-opcode ,(symb 'cp-r/a= name)
     (operate-into% -_8 a ,source 0 :ignore-result t)
     ,@(when pc `((increment-pc gameboy)))
@@ -660,7 +660,7 @@
                     (r/e    e)
                     (r/h    h)
                     (r/l    l)
-                    (mem/hl (read-8 gameboy hl) 3))
+                    (mem/hl (mem-8 gameboy hl) 3))
                   '((inc +_8)
                     (dec -_8))))
   `(define-opcode ,(symb op-name '-r/a= name)
@@ -709,8 +709,8 @@
                     (r/e    e)
                     (r/h    h)
                     (r/l    l)
-                    (mem/hl (read-8 gameboy hl) 2)
-                    (i      (read-8 gameboy pc) 2 t))
+                    (mem/hl (mem-8 gameboy hl) 2)
+                    (i      (mem-8 gameboy pc) 2 t))
                   '((and logand t)
                     (or logior nil)
                     (xor logxor nil))))
@@ -753,7 +753,7 @@
   (with-gameboy (gameboy)
     (iterate
       (while *running*)
-      (for op = (aref *opcodes* (read-8 gameboy pc)))
+      (for op = (aref *opcodes* (mem-8 gameboy pc)))
       ; todo does the chopping have to happen AFTER the funcall like in the JS?
       (incf-16 pc)
       (funcall op gameboy)
