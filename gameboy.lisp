@@ -78,7 +78,8 @@
                  chop-4 chop-8 chop-12 chop-16
                  unsigned-to-signed-8
                  +_8 -_8
-                 +_16 -_16))
+                 +_16 -_16
+                 rot))
 
 (declaim (ftype (function ((integer 0 (16)) int16 bit) int16)
                 set-bit))
@@ -190,6 +191,17 @@
             t
             (< (chop-12 x) (+ c (chop-12 y)))
             (minusp full))))
+
+
+(defun rot (width byte &optional (n 1))
+  (cond ((plusp n)
+         (logior (ldb (byte width 0) (ash byte n))
+                 (ldb (byte n (- width n)) byte)))
+        ((minusp n)
+         (dpb (ldb (byte (- n) 0) byte)
+              (byte (- n) (+ width n))
+              (ash byte n)))
+        (t byte)))
 
 
 ;;;; Data ---------------------------------------------------------------------
@@ -784,6 +796,63 @@
                   '((set 1) (res 0))))
   `(define-opcode ,(symb op-name '- bit '- name)
     (zapf ,source (set-bit ,bit % ,value))
+    (increment-clock gameboy ,clock)))
+
+
+;;; Rotate
+(macro-map                                             ; RLA/RRA/RL/RR
+  (((name source clock)
+    (direction offset))
+   #.(map-product #'list
+                  '((a       a                  1)
+                    (-r/a    a                  2)
+                    (-r/b    b                  2)
+                    (-r/c    c                  2)
+                    (-r/d    d                  2)
+                    (-r/e    e                  2)
+                    (-r/h    h                  2)
+                    (-r/l    l                  2)
+                    (-mem/hl (mem-8 gameboy hl) 4))
+                  '((l 1)
+                    (r -1))))
+  `(define-opcode ,(symb 'r direction name)
+    (with-chopped-8 (full trunc (rot 9 (dpb flag-carry (byte 1 8) ,source)
+                                     ,offset))
+      (set-flag gameboy
+                ; todo: http://www.devrs.com/gb/files/opcodes.html says the zero
+                ; flag is always reset for the bare A variants...
+                :zero (zerop trunc)
+                :subtract nil
+                :half-carry nil
+                :carry (ldb (byte 1 8) full))
+      (setf ,source trunc))
+    (increment-clock gameboy ,clock)))
+
+(macro-map                                             ; RLCA/RRCA/RLC/RRC
+  (((name source clock)
+    (direction offset))
+   #.(map-product #'list
+                  '((a       a                  1)
+                    (-r/a    a                  2)
+                    (-r/b    b                  2)
+                    (-r/c    c                  2)
+                    (-r/d    d                  2)
+                    (-r/e    e                  2)
+                    (-r/h    h                  2)
+                    (-r/l    l                  2)
+                    (-mem/hl (mem-8 gameboy hl) 4))
+                  '((l 1)
+                    (r -1))))
+  `(define-opcode ,(symb 'r direction 'c name)
+    (let ((result (rot 8 ,source ,offset)))
+      (set-flag gameboy
+                ; todo: http://www.devrs.com/gb/files/opcodes.html says the zero
+                ; flag is always reset for the bare A variants...
+                :zero (zerop result)
+                :subtract nil
+                :half-carry nil
+                :carry (ldb (byte 1 7) a))
+      (setf ,source result))
     (increment-clock gameboy ,clock)))
 
 
