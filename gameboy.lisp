@@ -748,6 +748,45 @@
     (increment-clock gameboy ,clock)))
 
 
+;;; Bit Twiddling
+(macro-map                                             ; BIT b, *
+  (((name source &optional (clock 2)) bit)
+   #.(map-product #'list
+                  '((r/a    a)
+                    (r/b    b)
+                    (r/c    c)
+                    (r/d    d)
+                    (r/e    e)
+                    (r/h    h)
+                    (r/l    l)
+                    (mem/hl (mem-8 gameboy hl) 4))
+                  '(0 1 2 3 4 5 6 7)))
+  `(define-opcode ,(symb 'bit- bit '- name)
+    (set-flag gameboy
+              :zero (logbitp ,bit ,source)
+              :subtract nil
+              ;; carry is unaffected
+              :half-carry t)
+    (increment-clock gameboy ,clock)))
+
+(macro-map                                             ; SET/RES b, *
+  (((name source &optional (clock 2)) bit (op-name value))
+   #.(map-product #'list
+                  '((r/a    a)
+                    (r/b    b)
+                    (r/c    c)
+                    (r/d    d)
+                    (r/e    e)
+                    (r/h    h)
+                    (r/l    l)
+                    (mem/hl (mem-8 gameboy hl) 4))
+                  '(0 1 2 3 4 5 6 7)
+                  '((set 1) (res 0))))
+  `(define-opcode ,(symb op-name '- bit '- name)
+    (zapf ,source (set-bit ,bit % ,value))
+    (increment-clock gameboy ,clock)))
+
+
 ;;;; VM -----------------------------------------------------------------------
 (defun reset (gameboy)
   ;; todo: zero out mmu/gpu arrays
