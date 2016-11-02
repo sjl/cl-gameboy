@@ -304,9 +304,9 @@
   (ftype (function (gameboy int16) (values t t)) find-memory)
   (ftype (function (gameboy int16) int8) read-8)
   (ftype (function (gameboy int16) int16) read-16)
-  (ftype (function (gameboy int16 int8)) write-8)
-  (ftype (function (gameboy int16 int16)) write-16)
-  (inline (setf read-8) (setf read-16)))
+  (ftype (function (int8 gameboy int16)) (setf read-8))
+  (ftype (function (int16 gameboy int16)) (setf read-16)))
+
 
 (defun find-memory (gameboy address)
   (with-mmu ((gb-mmu gameboy))
@@ -335,6 +335,7 @@
       ;; Wat
       (t (error "Bad memory address: ~X" address)))))
 
+
 (defun read-8 (gameboy address)
   (multiple-value-bind (array address) (find-memory gameboy address)
     (if array
@@ -345,21 +346,15 @@
   (cat (read-8 gameboy address)
        (read-8 gameboy (1+ address))))
 
-(defun write-8 (gameboy address value)
+(defun (setf read-8) (value gameboy address)
   (multiple-value-bind (array address) (find-memory gameboy address)
     (if array
       (setf (aref array address) value)
       (error "Cannot write to memory address ~X" address))))
 
-(defun write-16 (gameboy address value)
-  (write-8 gameboy address (ldb (byte 8 0) value))
-  (write-8 gameboy (1+ address) (ldb (byte 8 8) value)))
-
-(defun (setf read-8) (value gameboy address)
-  (write-8 gameboy address value))
-
 (defun (setf read-16) (value gameboy address)
-  (write-16 gameboy address value))
+  (setf (read-8 gameboy address) (ldb (byte 8 0) value)
+        (read-8 gameboy (1+ address)) (ldb (byte 8 8) value)))
 
 
 ;;;; ROMs ---------------------------------------------------------------------
@@ -443,21 +438,21 @@
 
 (macro-map (register (a b c d e h l))                  ; LD (HL), r
   `(define-opcode ,(symb 'ld-mem/hl<r/ register)
-    (write-8 gameboy hl ,register)
+    (setf (read-8 gameboy hl) ,register)
     (increment-clock gameboy 2)))
 
 (define-opcode ld-mem/hl<i                             ; LD (HL), i
-  (write-8 gameboy hl (read-8 gameboy pc))
+  (setf (read-8 gameboy hl) (read-8 gameboy pc))
   (increment-pc gameboy)
   (increment-clock gameboy 3))
 
 (macro-map (register (bc de))                          ; LD (BC/DE), A
   `(define-opcode ,(symb 'ld-mem/ register '<r/a)
-    (write-8 gameboy ,register a)
+    (setf (read-8 gameboy ,register) a)
     (increment-clock gameboy 2)))
 
 (define-opcode ld-mem/i<r/a                            ; LD (i), A
-  (write-8 gameboy (read-16 gameboy pc) a)
+  (setf (read-8 gameboy (read-16 gameboy pc)) a)
   (increment-pc gameboy 2)
   (increment-clock gameboy 4))
 
@@ -484,12 +479,12 @@
   (increment-clock gameboy 3))
 
 (define-opcode ld-mem/i<r/sp                           ; LD (i), SP
-  (write-16 gameboy (read-16 gameboy pc) sp)
+  (setf (read-16 gameboy (read-16 gameboy pc)) sp)
   (increment-pc gameboy 2)
   (increment-clock gameboy 5))
 
 (define-opcode ldi-mem/hl<a                            ; LDI (HL), A
-  (write-8 gameboy hl a)
+  (setf (read-8 gameboy hl) a)
   (incf-16 hl)
   (increment-clock gameboy 2))
 
@@ -499,7 +494,7 @@
   (increment-clock gameboy 2))
 
 (define-opcode ldd-mem/hl<a                            ; LDD (HL), A
-  (write-8 gameboy hl a)
+  (setf (read-8 gameboy hl) a)
   (decf-16 hl)
   (increment-clock gameboy 2))
 
@@ -514,7 +509,7 @@
   (increment-clock gameboy 3))
 
 (define-opcode ldh-mem/i<a                             ; LDH (i), A
-  (write-8 gameboy (+ #xff00 (read-8 gameboy pc)) a)
+  (setf (read-8 gameboy (+ #xff00 (read-8 gameboy pc))) a)
   (increment-pc gameboy)
   (increment-clock gameboy 3))
 
@@ -523,7 +518,7 @@
   (increment-clock gameboy 2))
 
 (define-opcode ldh-mem/c<a                             ; LDH (C), A
-  (write-8 gameboy (+ #xff00 c) a)
+  (setf (read-8 gameboy (+ #xff00 c)) a)
   (increment-clock gameboy 2))
 
 (define-opcode ld-r/hl<mem/sp+i                        ; LD HL, SP+i
@@ -553,7 +548,7 @@
   (-<> hl
     (read-8 gameboy <>)
     (swap-nibbles <>)
-    (write-8 gameboy hl <>)
+    (setf (read-8 gameboy hl) <>)
     (set-flag gameboy :zero <>
               :subtract nil :half-carry nil :carry nil))
   (increment-clock gameboy 4))
