@@ -342,6 +342,7 @@
 (declaim (inline increment-clock increment-pc
                  stack-push stack-pop))
 
+
 (defun increment-clock (gameboy &optional (machine-cycles 1))
   (with-gameboy (gameboy)
     (setf clock-increment machine-cycles)))
@@ -349,21 +350,16 @@
 (defun increment-pc (gameboy &optional (increment 1))
   (incf-16 (gb-pc gameboy) increment))
 
-(defun stack-push (gameboy lo hi)
+
+(defun stack-push (gameboy word)
   (with-gameboy (gameboy)
-    (decf sp)
-    (setf (mem-8 gameboy sp) hi)
-    (decf sp)
-    (setf (mem-8 gameboy sp) lo)))
+    (decf sp 2)
+    (setf (mem-16 gameboy sp) word)))
 
 (defun stack-pop (gameboy)
   (with-gameboy (gameboy)
-    (values (prog1 ; lo
-                (mem-8 gameboy sp)
-              (incf sp))
-            (prog1 ; hi
-                (mem-8 gameboy sp)
-              (incf sp)))))
+    (prog1 (mem-16 gameboy sp)
+      (incf sp 2))))
 
 
 ;;;; Memory -------------------------------------------------------------------
@@ -989,25 +985,23 @@
 
 ;;; Stack
 (macro-map                                             ; PUSH *
-  ((name hi lo)
-   ((r/af a f)
-    (r/bc b c)
-    (r/de d e)
-    (r/hl h l)))
+  ((name register)
+   ((r/af af)
+    (r/bc bc)
+    (r/de de)
+    (r/hl hl)))
   `(define-opcode ,(symb 'push- name)
-    (stack-push gameboy ,lo ,hi)
+    (stack-push gameboy ,register)
     (increment-clock gameboy 4)))
 
 (macro-map                                             ; POP *
-  ((name hi lo)
-   ((r/af a f)
-    (r/bc b c)
-    (r/de d e)
-    (r/hl h l)))
+  ((name register)
+   ((r/af af)
+    (r/bc bc)
+    (r/de de)
+    (r/hl hl)))
   `(define-opcode ,(symb 'pop- name)
-    (multiple-value-bind (l h)
-        (stack-pop gameboy)
-      (setf ,lo l ,hi h))
+    (setf ,register (stack-pop gameboy))
     (increment-clock gameboy 3)))
 
 
@@ -1058,9 +1052,7 @@
 (define-opcode call-i                                  ; CALL i
   (let ((target (mem-16 gameboy pc)))
     (increment-pc gameboy 2)
-    (stack-push gameboy ; push address of next instruction
-                (low-byte pc)
-                (high-byte pc))
+    (stack-push gameboy pc)
     (setf pc target)) ; jump to target
   (increment-clock gameboy 6))
 
@@ -1075,13 +1067,14 @@
       (increment-pc gameboy 2)
       (if (= ,flag ,flag-value)
         (progn
-          (stack-push gameboy ; push address of next instruction
-                      (low-byte pc)
-                      (high-byte pc))
+          (stack-push gameboy pc)
           (setf pc target)
           (increment-clock gameboy 6))
         (increment-clock gameboy 3)))))
 
+(define-opcode ret                                     ; RET
+  (setf pc (stack-pop gameboy))
+  (increment-clock gameboy 4))
 
 
 ;;;; VM -----------------------------------------------------------------------
