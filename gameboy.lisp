@@ -244,7 +244,7 @@
   (framebuffer (make-mem (* 160 144)))
   (mode 0 :type (integer 0 3))
   (clock 0 :type fixnum) ; fuck it, close enough
-  (line 0 :type (integer 0 (144))))
+  (line 0 :type (integer 0 (154))))
 
 (defstruct (gameboy (:conc-name gb-))
   (clock 0 :type int8)
@@ -433,6 +433,7 @@
 
 ;;;; Graphics -----------------------------------------------------------------
 (defun blit-scanline (gpu)
+  (declare (ignore gpu))
   nil)
 
 (defun step-gpu (gpu cycles)
@@ -455,10 +456,12 @@
                     (setf mode 1))
              (incf line))))
       ;; VBlank
-      (1 (when (>= clock 4560)
-           ;; todo: can we do away with the extra bullshit lines here or is this
-           ;; gonna cause problems?
-           (setf line 0 mode 2)))
+      (1 (when (>= clock 456)
+           (setf clock 0)
+           (incf line)
+           (when (> line 153)
+             (setf mode 2
+                   line 0))))
       ;; Scan (OAM)
       (2 (when (>= clock 80)
            ;; When the OAM portion of the scanline is done, just flip the mode.
