@@ -2,8 +2,8 @@
 
 
 (setf *print-length* 24)
+(declaim (optimize (speed 1) (safety 3) (debug 3)))
 (declaim (optimize (speed 3) (safety 0) (debug 0)))
-; (declaim (optimize (speed 1) (safety 3) (debug 3)))
 
 
 ;;;; Types & Constants --------------------------------------------------------
@@ -13,6 +13,7 @@
 (deftype sint16 () '(signed-byte 16))
 (deftype memory-array () '(simple-array int8 (*)))
 (deftype bit () 'cl:bit)
+(deftype opcode-function () '(function (gameboy) (values gameboy &optional)))
 
 (defparameter *bios*
   '(#x31 #xFE #xFF #xAF #x21 #xFF #x9F #x32 #xCB #x7C #x20 #xFB #x21 #x26 #xFF #x0E
@@ -471,137 +472,166 @@
 
 
 ;;;; Opcodes ------------------------------------------------------------------
-(defmacro define-opcode (name &body body)
-  (let ((name (symb 'op- name)))
+(defun unimplemented-opcode (gameboy)
+  (declare (ignore gameboy))
+  (error "Unimplemented opcode!"))
+
+
+(deftype opcode-array ()
+  '(simple-array t (256)))
+
+(declaim (type opcode-array *opcodes* *extended-opcodes*))
+
+(defparameter *opcodes*
+  (make-array 256
+    :element-type 'opcode-function
+    :initial-element #'unimplemented-opcode
+    :adjustable nil
+    :fill-pointer nil))
+
+(defparameter *extended-opcodes*
+  (make-array 256
+    :element-type 'opcode-function
+    :initial-element #'unimplemented-opcode
+    :adjustable nil
+    :fill-pointer nil))
+
+
+(defmacro define-opcode (name arguments &body body)
+  (let* ((name (symb 'op- name))
+         (argument-length 0)
+         (argument-bindings (iterate
+                              (with offset = 0)
+                              (for argument :in arguments)
+                              (destructuring-bind (symbol &optional (size 8))
+                                  (ensure-list argument)
+                                (collect `(,symbol (,(case size
+                                                       (8 'mem-8)
+                                                       (16 'mem-16))
+                                                     gameboy (+ pc ,offset))))
+                                (incf offset (/ size 8)))
+                              (finally (setf argument-length offset)))))
     `(progn
-      (declaim (ftype (function (gameboy) gameboy) ,name))
+      (declaim (ftype opcode-function ,name))
       (defun ,name (gameboy)
         (with-gameboy (gameboy)
-          ,@body)
+          (let ,argument-bindings
+            ,@(when (not (zerop argument-length))
+                `((increment-pc gameboy ,argument-length)))
+            ,@body))
         gameboy))))
 
 
 ;;; Load & Store
 (macro-map (register (b c d e h l))                    ; LD r, i
-  `(define-opcode ,(symb 'ld-r/ register '<i)
-    (setf ,register (mem-8 gameboy pc))
-    (increment-pc gameboy)
+  `(define-opcode ,(symb 'ld-r/ register '<i) (val)
+    (setf ,register val)
     (increment-clock gameboy 2)))
 
 (macro-map ((destination source)                       ; LD r, r
             #.(map-product #'list
                            '(a b c d e h l)
                            '(a b c d e h l)))
-  `(define-opcode ,(symb 'ld-r/ destination '<r/ source)
+  `(define-opcode ,(symb 'ld-r/ destination '<r/ source) ()
     (setf ,destination ,source)
     (increment-clock gameboy)))
 
 (macro-map (register (a b c d e h l))                  ; LD r, (HL)
-  `(define-opcode ,(symb 'ld-r/ register '<mem/hl)
+  `(define-opcode ,(symb 'ld-r/ register '<mem/hl) ()
     (setf ,register (mem-8 gameboy hl))
     (increment-clock gameboy 2)))
 
 (macro-map (register (a b c d e h l))                  ; LD (HL), r
-  `(define-opcode ,(symb 'ld-mem/hl<r/ register)
+  `(define-opcode ,(symb 'ld-mem/hl<r/ register) ()
     (setf (mem-8 gameboy hl) ,register)
     (increment-clock gameboy 2)))
 
-(define-opcode ld-mem/hl<i                             ; LD (HL), i
-  (setf (mem-8 gameboy hl) (mem-8 gameboy pc))
-  (increment-pc gameboy)
+(define-opcode ld-mem/hl<i (val)                       ; LD (HL), i
+  (setf (mem-8 gameboy hl) val)
   (increment-clock gameboy 3))
 
 (macro-map (register (bc de))                          ; LD (BC/DE), A
-  `(define-opcode ,(symb 'ld-mem/ register '<r/a)
+  `(define-opcode ,(symb 'ld-mem/ register '<r/a) ()
     (setf (mem-8 gameboy ,register) a)
     (increment-clock gameboy 2)))
 
-(define-opcode ld-mem/i<r/a                            ; LD (i), A
-  (setf (mem-8 gameboy (mem-16 gameboy pc)) a)
-  (increment-pc gameboy 2)
+(define-opcode ld-mem/i<r/a ((val 16))                 ; LD (i), A
+  (setf (mem-8 gameboy val) a)
   (increment-clock gameboy 4))
 
 (macro-map (register (bc de))                          ; LD A, (BC/DE)
-  `(define-opcode ,(symb 'ld-r/a<mem/ register)
+  `(define-opcode ,(symb 'ld-r/a<mem/ register) ()
     (setf a (mem-8 gameboy ,register))
     (increment-clock gameboy 2)))
 
-(define-opcode ld-r/a<mem/i                            ; LD A, (i)
-  (setf a (mem-8 gameboy (mem-16 gameboy pc)))
-  (increment-pc gameboy 2)
+(define-opcode ld-r/a<mem/i ((val 16))                 ; LD A, (i)
+  (setf a (mem-8 gameboy val))
   (increment-clock gameboy 4))
 
 (macro-map (register (bc de hl))                       ; LD BC/DE/HL, i
-  `(define-opcode ,(symb 'ld-r/ register '<i)
+  `(define-opcode ,(symb 'ld-r/ register '<i) ((val 16))
     ;; todo check this
-    (setf ,register (mem-16 gameboy pc))
-    (increment-pc gameboy 2)
+    (setf ,register val)
     (increment-clock gameboy 3)))
 
-(define-opcode ld-r/sp<i                               ; LD SP, i
-  (setf sp (mem-16 gameboy pc))
-  (increment-pc gameboy 2)
+(define-opcode ld-r/sp<i ((val 16))                    ; LD SP, i
+  (setf sp val)
   (increment-clock gameboy 3))
 
-(define-opcode ld-mem/i<r/sp                           ; LD (i), SP
-  (setf (mem-16 gameboy (mem-16 gameboy pc)) sp)
-  (increment-pc gameboy 2)
+(define-opcode ld-mem/i<r/sp ((val 16))                ; LD (i), SP
+  (setf (mem-16 gameboy val) sp)
   (increment-clock gameboy 5))
 
-(define-opcode ldi-mem/hl<a                            ; LDI (HL), A
+(define-opcode ldi-mem/hl<a ()                         ; LDI (HL), A
   (setf (mem-8 gameboy hl) a)
   (incf-16 hl)
   (increment-clock gameboy 2))
 
-(define-opcode ldi-a<mem/hl                            ; LDI A, (HL)
+(define-opcode ldi-a<mem/hl ()                         ; LDI A, (HL)
   (setf a (mem-8 gameboy hl))
   (incf-16 hl)
   (increment-clock gameboy 2))
 
-(define-opcode ldd-mem/hl<a                            ; LDD (HL), A
+(define-opcode ldd-mem/hl<a ()                         ; LDD (HL), A
   (setf (mem-8 gameboy hl) a)
   (decf-16 hl)
   (increment-clock gameboy 2))
 
-(define-opcode ldd-a<mem/hl                            ; LDD A, (HL)
+(define-opcode ldd-a<mem/hl ()                         ; LDD A, (HL)
   (setf a (mem-8 gameboy hl))
   (decf-16 hl)
   (increment-clock gameboy 2))
 
-(define-opcode ldh-a<mem/i                             ; LDH A, (i)
-  (setf a (mem-8 gameboy (+ #xff00 (mem-8 gameboy pc))))
-  (increment-pc gameboy)
+(define-opcode ldh-a<mem/i (val)                       ; LDH A, (i)
+  (setf a (mem-8 gameboy (+ #xff00 val)))
   (increment-clock gameboy 3))
 
-(define-opcode ldh-mem/i<a                             ; LDH (i), A
-  (setf (mem-8 gameboy (+ #xff00 (mem-8 gameboy pc))) a)
-  (increment-pc gameboy)
+(define-opcode ldh-mem/i<a (val)                       ; LDH (i), A
+  (setf (mem-8 gameboy (+ #xff00 val)) a)
   (increment-clock gameboy 3))
 
-(define-opcode ldh-a<mem/c                             ; LDH A, (C)
+(define-opcode ldh-a<mem/c ()                          ; LDH A, (C)
   (setf a (mem-8 gameboy (+ #xff00 c)))
   (increment-clock gameboy 2))
 
-(define-opcode ldh-mem/c<a                             ; LDH (C), A
+(define-opcode ldh-mem/c<a ()                          ; LDH (C), A
   (setf (mem-8 gameboy (+ #xff00 c)) a)
   (increment-clock gameboy 2))
 
-(define-opcode ld-r/hl<mem/sp+i                        ; LD HL, SP+i
-  (let ((offset (unsigned-to-signed-8 (mem-8 gameboy pc))))
-    (with-chopped-16 (full trunc (+ sp offset))
-      (setf hl trunc)
-      (set-flag gameboy
-                :zero nil
-                :subtract nil
-                :half-carry nil ; todo
-                :carry (> full 255))))
-  (increment-pc gameboy)
+(define-opcode ld-r/hl<mem/sp+i (offset)               ; LD HL, SP+i
+  (with-chopped-16 (full trunc (+ sp (unsigned-to-signed-8 offset)))
+    (setf hl trunc)
+    (set-flag gameboy
+              :zero nil
+              :subtract nil
+              :half-carry nil ; todo
+              :carry (> full 255)))
   (increment-clock gameboy 3))
 
 
 ;;; Swap
 (macro-map (register (a b c d e h l))                  ; SWAP r
-  `(define-opcode ,(symb 'swap-r/ register)
+  `(define-opcode ,(symb 'swap-r/ register) ()
     (-<> ,register
       (swap-nibbles <>)
       (setf ,register <>)
@@ -609,7 +639,7 @@
                 :subtract nil :half-carry nil :carry nil))
     (increment-clock gameboy 2)))
 
-(define-opcode swap-mem/hl                             ; SWAP (HL)
+(define-opcode swap-mem/hl ()                          ; SWAP (HL)
   (-<> hl
     (mem-8 gameboy <>)
     (swap-nibbles <>)
@@ -635,7 +665,7 @@
 
 
 (macro-map                                             ; ADD/ADC A, *
-  (((name source &optional (clock 1) (pc nil)) with-carry)
+  (((name source &optional (clock 1) (arglist ())) with-carry)
    #.(map-product #'list '((r/a    a)
                            (r/b    b)
                            (r/c    c)
@@ -644,16 +674,15 @@
                            (r/h    h)
                            (r/l    l)
                            (mem/hl (mem-8 gameboy hl) 2)
-                           (i      (mem-8 gameboy pc) 2 t))
+                           (i      val                2 (val)))
                   '(nil t)))
-  `(define-opcode ,(symb (if with-carry 'adc 'add) '-r/a< name)
+  `(define-opcode ,(symb (if with-carry 'adc 'add) '-r/a< name) ,arglist
     (operate-into% +_8 a ,source
                    ,(if with-carry 'flag-carry 0))
-    ,@(when pc `((increment-pc gameboy)))
     (increment-clock gameboy ,clock)))
 
 (macro-map (register (bc de hl sp))                    ; ADD HL, BC/DE/HL/SP
-  `(define-opcode ,(symb 'add-r/hl<r/ register)
+  `(define-opcode ,(symb 'add-r/hl<r/ register) ()
     (multiple-value-bind (result zero half-carry carry)
         (+_16 hl ,register)
       (declare (ignore zero))
@@ -665,7 +694,7 @@
                 :carry carry))
     (increment-clock gameboy 2)))
 
-(define-opcode add-r/sp<i                              ; ADD SP, i
+(define-opcode add-r/sp<i ()                           ; ADD SP, i
   ; todo this hole thing is fucked, especially the flags, fix later
   (incf-16 sp (unsigned-to-signed-8 (mem-8 gameboy pc)))
   (set-flag gameboy
@@ -677,7 +706,7 @@
   (increment-clock gameboy 4))
 
 (macro-map                                             ; SUB/SBC A, *
-  (((name source &optional (clock 1) (pc nil)) with-carry)
+  (((name source &optional (clock 1) (arglist ())) with-carry)
    #.(map-product #'list '((r/a    a)
                            (r/b    b)
                            (r/c    c)
@@ -686,16 +715,15 @@
                            (r/h    h)
                            (r/l    l)
                            (mem/hl (mem-8 gameboy hl) 2)
-                           (i      (mem-8 gameboy pc) 2 t))
+                           (i      val                2 (val)))
                   '(nil t)))
-  `(define-opcode ,(symb (if with-carry 'sbc 'sub) '-r/a< name)
+  `(define-opcode ,(symb (if with-carry 'sbc 'sub) '-r/a< name) ,arglist
     (operate-into% -_8 a ,source
                    ,(if with-carry 'flag-carry 0))
-    ,@(when pc `((increment-pc gameboy)))
     (increment-clock gameboy ,clock)))
 
 (macro-map                                             ; CP A, *
-    ((name source &optional (clock 1) (pc nil))
+    ((name source &optional (clock 1) (arglist ()))
      ((r/a    a)
       (r/b    b)
       (r/c    c)
@@ -704,10 +732,9 @@
       (r/h    h)
       (r/l    l)
       (mem/hl (mem-8 gameboy hl) 2)
-      (i      (mem-8 gameboy pc) 2 t)))
-  `(define-opcode ,(symb 'cp-r/a= name)
+      (i      val                2 (val))))
+  `(define-opcode ,(symb 'cp-r/a= name) ,arglist
     (operate-into% -_8 a ,source 0 :ignore-result t)
-    ,@(when pc `((increment-pc gameboy)))
     (increment-clock gameboy ,clock)))
 
 (macro-map                                             ; INC/DEC * (8-bit)
@@ -724,7 +751,7 @@
                     (mem/hl (mem-8 gameboy hl) 3))
                   '((inc +_8)
                     (dec -_8))))
-  `(define-opcode ,(symb op-name '- name)
+  `(define-opcode ,(symb op-name '- name) ()
     (multiple-value-bind (result zero subtract half-carry carry)
         (,operation ,source 1)
       (declare (ignore carry)) ;; carry is unaffected for some reason...
@@ -744,13 +771,13 @@
                     (r/sp sp))
                   '((inc +_16)
                     (dec -_16))))
-  `(define-opcode ,(symb op-name '- name)
+  `(define-opcode ,(symb op-name '- name) ()
     (setf ,source (,operation ,source 1))
     (increment-clock gameboy 2)))
 
 
 ;;; Miscellaneous
-(define-opcode daa                                     ; DAA
+(define-opcode daa ()                                  ; DAA
   (if flag-subtract
     (progn (when flag-half-carry
              (zapf a (chop-8 (- % #x06))))
@@ -770,17 +797,17 @@
     (setf a trunc))
   (increment-clock gameboy))
 
-(define-opcode nop                                     ; NOP
+(define-opcode nop ()                                  ; NOP
   (increment-clock gameboy 1))
 
-(define-opcode halt                                    ; HALT
+(define-opcode halt ()                                 ; HALT
   (setf halt 1)
   (increment-clock gameboy 1))
 
 
 ;;; Logic
 (macro-map                                             ; AND/OR/XOR A, *
-  (((name source &optional (clock 1) (pc nil))
+  (((name source &optional (clock 1) (arglist ()))
     (op-name operation hc))
    #.(map-product #'list
                   '((r/a    a)
@@ -791,11 +818,11 @@
                     (r/h    h)
                     (r/l    l)
                     (mem/hl (mem-8 gameboy hl) 2)
-                    (i      (mem-8 gameboy pc) 2 t))
+                    (i      val                2 (val)))
                   '((and logand t)
                     (or logior nil)
                     (xor logxor nil))))
-  `(define-opcode ,(symb op-name '-r/a< name)
+  `(define-opcode ,(symb op-name '-r/a< name) ,arglist
     (-<> ,source
       (,operation a <>)
       (setf a <>)
@@ -804,7 +831,6 @@
                 :subtract nil
                 :half-carry ,hc
                 :carry nil))
-    ,@(when pc `((increment-pc gameboy)))
     (increment-clock gameboy ,clock)))
 
 
@@ -821,7 +847,7 @@
                     (r/l    l)
                     (mem/hl (mem-8 gameboy hl) 4))
                   '(0 1 2 3 4 5 6 7)))
-  `(define-opcode ,(symb 'bit- bit '- name)
+  `(define-opcode ,(symb 'bit- bit '- name) ()
     (set-flag gameboy
               :zero (logbitp ,bit ,source)
               :subtract nil
@@ -842,25 +868,25 @@
                     (mem/hl (mem-8 gameboy hl) 4))
                   '(0 1 2 3 4 5 6 7)
                   '((set 1) (res 0))))
-  `(define-opcode ,(symb op-name '- bit '- name)
+  `(define-opcode ,(symb op-name '- bit '- name) ()
     (zapf ,source (set-bit ,bit % ,value))
     (increment-clock gameboy ,clock)))
 
-(define-opcode cpl                                     ; CPL
+(define-opcode cpl ()                                  ; CPL
   (zapf a (chop-8 (lognot %)))
   (set-flag gameboy
             :subtract t
             :half-carry t)
   (increment-clock gameboy 1))
 
-(define-opcode ccf                                     ; CCF
+(define-opcode ccf ()                                  ; CCF
   (set-flag gameboy
             :subtract nil
             :half-carry nil
             :carry (flip flag-carry))
   (increment-clock gameboy 1))
 
-(define-opcode scf                                     ; SCF
+(define-opcode scf ()                                  ; SCF
   (set-flag gameboy
             :subtract nil
             :half-carry nil
@@ -884,7 +910,7 @@
                     (-mem/hl (mem-8 gameboy hl) 4))
                   '((l 1)
                     (r -1))))
-  `(define-opcode ,(symb 'r direction name)
+  `(define-opcode ,(symb 'r direction name) ()
     (with-chopped-8 (full trunc (rot 9 (cat ,source flag-carry 8 1)
                                      ,offset))
       (set-flag gameboy
@@ -912,7 +938,7 @@
                     (-mem/hl (mem-8 gameboy hl) 4))
                   '((l 1)
                     (r -1))))
-  `(define-opcode ,(symb 'r direction 'c name)
+  `(define-opcode ,(symb 'r direction 'c name) ()
     (let ((result (rot 8 ,source ,offset)))
       (set-flag gameboy
                 ; todo: http://www.devrs.com/gb/files/opcodes.html says the zero
@@ -936,7 +962,7 @@
     (r/h    h)
     (r/l    l)
     (mem/hl (mem-8 gameboy hl) 4)))
-  `(define-opcode ,(symb 'sla- name)
+  `(define-opcode ,(symb 'sla- name) ()
     (with-chopped-8 (full trunc (ash ,source 1))
       (set-flag gameboy
                 :zero (zerop trunc)
@@ -956,7 +982,7 @@
     (r/h    h)
     (r/l    l)
     (mem/hl (mem-8 gameboy hl) 4)))
-  `(define-opcode ,(symb 'sra- name)
+  `(define-opcode ,(symb 'sra- name) ()
     (let ((orig ,source))
       (with-chopped-8 (full trunc (-<> orig
                                     (ash <> -1)
@@ -979,7 +1005,7 @@
     (r/h    h)
     (r/l    l)
     (mem/hl (mem-8 gameboy hl) 4)))
-  `(define-opcode ,(symb 'sra- name)
+  `(define-opcode ,(symb 'sra- name) ()
     (let* ((orig ,source)
            (trunc (chop-8 (ash orig -1))))
       (set-flag gameboy
@@ -998,7 +1024,7 @@
     (r/bc bc)
     (r/de de)
     (r/hl hl)))
-  `(define-opcode ,(symb 'push- name)
+  `(define-opcode ,(symb 'push- name) ()
     (stack-push gameboy ,register)
     (increment-clock gameboy 4)))
 
@@ -1008,23 +1034,22 @@
     (r/bc bc)
     (r/de de)
     (r/hl hl)))
-  `(define-opcode ,(symb 'pop- name)
+  `(define-opcode ,(symb 'pop- name) ()
     (setf ,register (stack-pop gameboy))
     (increment-clock gameboy 3)))
 
 
 ;;; Jumps
-(define-opcode jp-i                                    ; JP, i
-  (setf pc (mem-16 gameboy pc))
+(define-opcode jp-i ((target 16))                      ; JP, i
+  (setf pc target)
   (increment-clock gameboy 3))
 
 (define-opcode jp-mem/hl                               ; JP, (HL)
   (setf pc hl)
   (increment-clock gameboy 1))
 
-(define-opcode jr-i                                    ; JR, i
-  (incf pc (unsigned-to-signed-8 (mem-8 gameboy pc)))
-  (increment-pc gameboy)
+(define-opcode jr-i (offset)                           ; JR, i
+  (incf pc (unsigned-to-signed-8 offset))
   (increment-clock gameboy 2))
 
 (macro-map                                             ; JP cond, i
@@ -1033,13 +1058,11 @@
     (z  flag-zero  1)
     (nc flag-carry 0)
     (c  flag-carry 1)))
-  `(define-opcode ,(symb 'jp- name '-i)
-    (let ((target (mem-16 gameboy pc)))
-      (increment-pc gameboy 2)
-      (if (= ,flag ,flag-value)
-        (progn (setf pc target)
-               (increment-clock gameboy 3))
-        (increment-clock gameboy 2)))))
+  `(define-opcode ,(symb 'jp- name '-i) ((target 16))
+    (if (= ,flag ,flag-value)
+      (progn (setf pc target)
+             (increment-clock gameboy 3))
+      (increment-clock gameboy 2))))
 
 (macro-map                                             ; JR cond, i
   ((name flag flag-value)
@@ -1047,21 +1070,17 @@
     (z  flag-zero  1)
     (nc flag-carry 0)
     (c  flag-carry 1)))
-  `(define-opcode ,(symb 'jr- name '-i)
-    (let ((offset (unsigned-to-signed-8 (mem-8 gameboy pc))))
-      (increment-pc gameboy 1)
-      (if (= ,flag ,flag-value)
-        (progn (incf pc offset)
-               (increment-clock gameboy 3))
-        (increment-clock gameboy 2)))))
+  `(define-opcode ,(symb 'jr- name '-i) (offset)
+    (if (= ,flag ,flag-value)
+      (progn (incf pc (unsigned-to-signed-8 offset))
+             (increment-clock gameboy 3))
+      (increment-clock gameboy 2))))
 
 
 ;;; Call/Return
-(define-opcode call-i                                  ; CALL i
-  (let ((target (mem-16 gameboy pc)))
-    (increment-pc gameboy 2)
-    (stack-push gameboy pc)
-    (setf pc target)) ; jump to target
+(define-opcode call-i ((target 16))                    ; CALL i
+  (stack-push gameboy pc)
+  (setf pc target)
   (increment-clock gameboy 6))
 
 (macro-map                                             ; CALL cond, i
@@ -1070,17 +1089,15 @@
     (z  flag-zero  1)
     (nc flag-carry 0)
     (c  flag-carry 1)))
-  `(define-opcode ,(symb 'call- name '-i)
-    (let ((target (mem-16 gameboy pc)))
-      (increment-pc gameboy 2)
-      (if (= ,flag ,flag-value)
-        (progn
-          (stack-push gameboy pc)
-          (setf pc target)
-          (increment-clock gameboy 6))
-        (increment-clock gameboy 3)))))
+  `(define-opcode ,(symb 'call- name '-i) ((target 16))
+    (if (= ,flag ,flag-value)
+      (progn
+        (stack-push gameboy pc)
+        (setf pc target)
+        (increment-clock gameboy 6))
+      (increment-clock gameboy 3))))
 
-(define-opcode ret                                     ; RET
+(define-opcode ret ()                                  ; RET
   (setf pc (stack-pop gameboy))
   (increment-clock gameboy 4))
 
@@ -1090,12 +1107,18 @@
     (z  flag-zero  1)
     (nc flag-carry 0)
     (c  flag-carry 1)))
-  `(define-opcode ,(symb 'ret- name)
+  `(define-opcode ,(symb 'ret- name) ()
     (if (= ,flag ,flag-value)
       (progn
         (setf pc (stack-pop gameboy))
         (increment-clock gameboy 5))
       (increment-clock gameboy 2))))
+
+
+;;; Extended Opcodes
+(define-opcode extended (code)
+  (funcall (the opcode-function (aref *extended-opcodes* code)) ; trust me, lisp
+           gameboy))
 
 
 ;;;; VM -----------------------------------------------------------------------
@@ -1106,13 +1129,6 @@
 
 
 (defparameter *running* t)
-
-
-(defparameter *opcodes*
-  (make-array (length *opcode-list*)
-    :initial-contents *opcode-list*
-    :adjustable nil
-    :fill-pointer nil))
 
 
 (defun run (gameboy)
