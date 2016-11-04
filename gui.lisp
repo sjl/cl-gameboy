@@ -21,10 +21,12 @@
 
 (define-slot (screen update) ()
   (declare (connected timer (timeout)))
-  ; set a random byte
-  (setf (cffi:mem-aref (screen-data screen)
-                       :uint8 (random (* 256 256 3)))
-        (random 256))
+
+  (iterate (repeat 10)
+           (setf (cffi:mem-aref (screen-data screen) :uint8
+                                (gbref (random 160) (random 144) (random 3)))
+                 (random 256)))
+
   (q+:repaint screen))
 
 
@@ -71,11 +73,6 @@
 ;;;; Redraw
 (define-override (screen paint-event) (ev)
   (declare (ignore ev))
-
-  (iterate (repeat 10)
-           (setf (cffi:mem-aref (screen-data screen) :uint8
-                                (gbref (random 160) (random 144) (random 3)))
-                 (random 256)))
 
   (with-finalizing ((painter (q+:make-qpainter screen)))
     (q+:begin-native-painting painter)
