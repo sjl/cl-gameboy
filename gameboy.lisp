@@ -3,7 +3,7 @@
 
 (setf *print-length* 24)
 (declaim (optimize (speed 1) (safety 3) (debug 3)))
-(declaim (optimize (speed 3) (safety 0) (debug 0)))
+; (declaim (optimize (speed 3) (safety 0) (debug 0)))
 
 
 ;;;; Types & Constants --------------------------------------------------------
@@ -240,11 +240,14 @@
   (zero-page-ram (make-mem 128) :type memory-array :read-only t))
 
 (defstruct gpu
-  (renderer #'identity :type function)
+  (gui (gameboy.gui::make-qt-gui))
   (framebuffer (make-mem (* 160 144)))
   (mode 0 :type (integer 0 3))
   (clock 0 :type fixnum) ; fuck it, close enough
-  (line 0 :type (integer 0 (154))))
+  (line 0 :type (integer 0 154))
+  (background-map 0 :type bit)
+  (scroll-x 0 :type (unsigned-byte 8))
+  (scroll-y 0 :type (unsigned-byte 8)))
 
 (defstruct (gameboy (:conc-name gb-))
   (clock 0 :type int8)
@@ -289,7 +292,8 @@
   in-bios bios rom working-ram external-ram zero-page-ram)
 
 (define-with-macro (gpu)
-  renderer framebuffer mode clock line)
+  gui framebuffer mode clock line background-map
+  scroll-x scroll-y)
 
 (define-with-macro (gameboy :conc-name gb)
   a b c d e h l f pc sp clock clock-increment af bc de hl halt
@@ -432,17 +436,29 @@
 
 
 ;;;; Graphics -----------------------------------------------------------------
-(defun blit-scanline (gpu)
-  (declare (ignore gpu))
+(defun scanline (gameboy)
+  (with-gpu ((gb-gpu gameboy))
+    (let ((g gui)
+          (y line)
+          (tile-offset (+ (if (zerop background-map) #x1800 #x1c00)
+                          (-<> scroll-y
+                            (+ line <>)
+                            (chop-8 <>)
+                            (ash <> -3)
+                            (* 32 <>)))))
+      (gameboy.gui::set-debug g `(line ,line))
+      (iterate
+        (for x :from 0 :below 160)
+        (gameboy.gui::blit-pixel g x y (random 3)))))
   nil)
 
-(defun step-gpu (gpu cycles)
+(defun step-gpu (gameboy cycles)
   "Step the GPU.
 
   `cycles` should be given in CPU cycles.
 
   "
-  (with-gpu (gpu)
+  (with-gpu ((gb-gpu gameboy))
     (incf clock cycles)
     (case mode
       ;; HBlank
@@ -451,51 +467,56 @@
            ;; mode.  Unless this was the LAST line, then render the frame to the
            ;; physical screen and go into VBlank instead.
            (setf clock 0)
+           (incf line)
            (if (= line 143)
-             (progn (funcall renderer gpu)
+             (progn (gameboy.gui::refresh-screen gui)
                     (setf mode 1))
-             (incf line))))
+             (setf mode 2))))
       ;; VBlank
       (1 (when (>= clock 456)
            (setf clock 0)
            (incf line)
            (when (> line 153)
-             (setf mode 2
-                   line 0))))
+             (setf mode 2 line 0))))
       ;; Scan (OAM)
       (2 (when (>= clock 80)
            ;; When the OAM portion of the scanline is done, just flip the mode.
            (setf clock 0 mode 3)))
       ;; Scan (VRAM)
-      (3 (when (>= clock 80)
+      (3 (when (>= clock 172)
            ;; When the VRAM portion of the scanline is done, flip the mode and
            ;; also blit the scanline into the framebuffer.
            (setf clock 0 mode 0)
-           (blit-scanline gpu))))))
+           (scanline gameboy))))))
 
 
 ;;;; Opcodes ------------------------------------------------------------------
-(defun unimplemented-opcode (gameboy)
-  (declare (ignore gameboy))
-  (error "Unimplemented opcode!"))
-
-
 (deftype opcode-array ()
   '(simple-array t (256)))
+
+
+(defun unimplemented-opcode (code gameboy)
+  (declare (ignore gameboy))
+  (error "Unimplemented opcode #x~2,'0X!" code))
+
+(defparameter *unimplemented-functions*
+  (iterate (for code :from 0 :below 256)
+           (collect (curry #'unimplemented-opcode code))))
+
 
 (declaim (type opcode-array *opcodes* *extended-opcodes*))
 
 (defparameter *opcodes*
   (make-array 256
     :element-type 'opcode-function
-    :initial-element #'unimplemented-opcode
+    :initial-contents *unimplemented-functions*
     :adjustable nil
     :fill-pointer nil))
 
 (defparameter *extended-opcodes*
   (make-array 256
     :element-type 'opcode-function
-    :initial-element #'unimplemented-opcode
+    :initial-contents *unimplemented-functions*
     :adjustable nil
     :fill-pointer nil))
 
@@ -1047,7 +1068,7 @@
   (setf pc target)
   (increment-clock gameboy 3))
 
-(define-opcode jp-mem/hl                               ; JP, (HL)
+(define-opcode jp-mem/hl ()                            ; JP, (HL)
   (setf pc hl)
   (increment-clock gameboy 1))
 
@@ -1679,14 +1700,23 @@
 
 
 (defun run (gameboy)
-  (with-gameboy (gameboy)
-    (iterate
-      (while *running*)
-      (for op = (aref *opcodes* (mem-8 gameboy pc)))
-      ; todo does the chopping have to happen AFTER the funcall like in the JS?
-      (incf-16 pc)
-      (funcall op gameboy)
-      (incf clock clock-increment))))
+  (setf *running* t)
+  (bt:make-thread
+    (lambda ()
+      (with-gameboy (gameboy)
+        (iterate
+          (while *running*)
+          ; (for op = (aref *opcodes* (mem-8 gameboy pc)))
+          ; todo does the chopping have to happen AFTER the funcall like in the JS?
+          ; (incf-16 pc)
+          ; (funcall op gameboy)
+          ; (incf clock clock-increment)
+          (sleep 0.0001)
+          (step-gpu gameboy 1)))))
+  (->> gameboy gb-gpu gpu-gui gameboy.gui::run-qt-gui))
+
+(defun start ()
+  (run (make-gameboy)))
 
 
 ;;;; TODO ---------------------------------------------------------------------

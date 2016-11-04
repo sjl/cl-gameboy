@@ -10,6 +10,7 @@
   :depends-on (:iterate
                :losh
                :cl-arrows
+               :bordeaux-threads
                :qtools
                :qtcore
                :qtgui

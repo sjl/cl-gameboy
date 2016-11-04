@@ -3,7 +3,7 @@
 
 
 ;;;; Config
-(defparameter *scale* 4)
+(defparameter *scale* 5)
 (defparameter *width* (* *scale* 160))
 (defparameter *height* (* *scale* 144))
 
@@ -18,7 +18,12 @@
 ;;;; Main Window
 (define-widget screen (QGLWidget)
   ((texture :accessor screen-texture)
-   (data :accessor screen-data :initarg :data)))
+   (data :accessor screen-data :initarg :data)
+   (gui :accessor screen-gui :initarg :gui)))
+
+(defun die (screen)
+  (q+:close screen)
+  (setf gameboy::*running* nil))
 
 
 ;;;; Init
@@ -59,13 +64,13 @@
 
   (if gameboy::*running*
     (q+:repaint screen)
-    (q+:close screen)))
+    (die screen)))
 
 
 ;;;; Keyboard
 (define-override (screen key-release-event) (ev)
   (cond ((= (q+:key ev) (q+:qt.key_escape))
-         (q+:close screen)))
+         (die screen)))
   (stop-overriding))
 
 
@@ -98,12 +103,38 @@
 
     (gl:bind-texture :texture-2d 0)
 
-    (q+:end-native-painting painter)))
+    (q+:end-native-painting painter)
+
+    (let ((debug (qt-gui-debug (screen-gui screen))))
+      (when debug
+        (with-finalizing ((font (q+:make-qfont "Menlo" 40))
+                          (border-color (q+:make-qcolor 255 255 255))
+                          (fill-color (q+:make-qcolor 0 0 0))
+                          (path (q+:make-qpainterpath))
+                          (pen (q+:make-qpen)))
+          (with-finalizing ((brush (q+:make-qbrush fill-color)))
+            (setf (q+:width pen) 1)
+            (setf (q+:color pen) border-color)
+
+            (setf (q+:pen painter) pen)
+            (setf (q+:brush painter) brush)
+            (setf (q+:font painter) font)
+            (setf (q+:weight font) (q+:qfont.black))
+            (setf (q+:style-hint font) (q+:qfont.type-writer))
+
+            ; (setf (q+:pen painter) (q+:make-qcolor "#ff0000"))
+            (q+:add-text path 10 40 font
+                         (let ((*package* (find-package :gameboy)))
+                           (prin1-to-string debug)))
+            (q+:draw-path painter path)))))))
 
 
 ;;;; Main
+(defparameter *current* nil)
+
 (defstruct (qt-gui (:constructor make-qt-gui%))
-  (data (error "Required.") :type screen-data-array))
+  (data (error "Required.") :type screen-data-array)
+  (debug nil))
 
 (defun make-qt-gui ()
   (let* ((data (make-array (* 144 160)
@@ -115,7 +146,9 @@
 
 (defun run-qt-gui (g)
   (with-main-window
-    (window (make-instance 'screen :data (qt-gui-data g)))))
+    (window (make-instance 'screen
+              :data (qt-gui-data g)
+              :gui g))))
 
 
 (defun blit-pixel (gui x y value)
@@ -136,8 +169,12 @@
 (defun refresh-screen (gui)
   (declare (ignore gui)))
 
+(defun set-debug (gui object)
+  (setf (qt-gui-debug gui) object))
+
 
 (defun main ()
-  (run-qt-gui (make-qt-gui)))
+  (setf *current* (make-qt-gui))
+  (run-qt-gui *current*))
 
 
