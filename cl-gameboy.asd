@@ -12,11 +12,14 @@
                :cl-arrows
                :qtools
                :qtcore
-               :qtgui)
+               :qtgui
+               :qtopengl
+               :cl-opengl)
 
   :serial t
   :components ((:module "vendor" :serial t
                 :components ((:file "quickutils-package")
                              (:file "quickutils")))
                (:file "package")
+               (:file "gui")
                (:file "gameboy")))

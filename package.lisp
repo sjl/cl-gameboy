@@ -8,3 +8,6 @@
   (:export)
   (:shadow :bit)
   )
+
+(defpackage :gameboy.gui
+  (:use :cl+qt :iterate :losh))
