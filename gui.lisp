@@ -50,11 +50,13 @@
 (define-slot (screen update) ()
   (declare (connected timer (timeout)))
 
-  (iterate (repeat 2)
-           (setf (sref (screen-data screen) (random 160) (random 144))
-                 (random 256)))
+  ; (iterate (repeat 2)
+  ;          (setf (sref (screen-data screen) (random 160) (random 144))
+  ;                (random 256)))
 
-  (q+:repaint screen))
+  (if gameboy::*running*
+    (q+:repaint screen)
+    (q+:close screen)))
 
 
 ;;;; Keyboard
