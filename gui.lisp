@@ -21,7 +21,6 @@
 ;;;; Init
 (defun initialize-texture (size)
   (let* ((handle (gl:gen-texture))
-         ; (data (cffi:foreign-alloc :uint8 :count (* size size 3)))
          (raw (make-array (* size size)
                  :element-type '(unsigned-byte 8)
                  :adjustable nil
@@ -64,7 +63,7 @@
 (define-slot (screen update) ()
   (declare (connected timer (timeout)))
 
-  (iterate (repeat 10)
+  (iterate (repeat 2)
            (setf (sref (screen-data screen) (random 160) (random 144))
                  (random 256)))
 
