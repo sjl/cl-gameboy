@@ -7,11 +7,53 @@
 (defparameter *width* (* *scale* 160))
 (defparameter *height* (* *scale* 144))
 
+(defmacro sref (arr x y)
+  `(aref ,arr ,y ,x))
+
 
 ;;;; Main Window
 (define-widget screen (QGLWidget)
   ((texture :accessor screen-texture)
-   (data :accessor screen-data)))
+   (data :accessor screen-data)
+   (raw :accessor screen-raw)))
+
+
+;;;; Init
+(defun initialize-texture (size)
+  (let* ((handle (gl:gen-texture))
+         ; (data (cffi:foreign-alloc :uint8 :count (* size size 3)))
+         (raw (make-array (* size size)
+                 :element-type '(unsigned-byte 8)
+                 :adjustable nil
+                 :fill-pointer nil))
+         (data (make-array (list size size)
+                 :element-type '(unsigned-byte 8)
+                 :displaced-to raw)))
+    (gl:bind-texture :texture-2d handle)
+
+    (iterate (for-nested ((x :from 0 :below 160)
+                          (y :from 0 :below 144)))
+             (setf (sref data x y) (truncate (* 255 (/ x 160)))))
+
+    (gl:tex-image-2d :texture-2d 0 :luminance size size 0 :luminance :unsigned-byte raw)
+    (gl:tex-parameter :texture-2d :texture-min-filter :nearest) ; sharp pixels or gtfo
+    (gl:tex-parameter :texture-2d :texture-mag-filter :nearest)
+    (gl:enable :texture-2d)
+
+    (gl:bind-texture :texture-2d 0)
+
+    (values handle data raw)))
+
+(define-initializer (screen setup)
+  (setf (q+:window-title screen) "cl-gameboy")
+  (setf (q+:fixed-size screen) (values *width* *height*)))
+
+(define-override (screen "initializeGL") ()
+  (multiple-value-bind (texture data raw) (initialize-texture 256)
+    (setf (screen-texture screen) texture
+          (screen-data screen) data
+          (screen-raw screen) raw))
+  (stop-overriding))
 
 
 ;;;; Timer
@@ -23,42 +65,10 @@
   (declare (connected timer (timeout)))
 
   (iterate (repeat 10)
-           (setf (cffi:mem-aref (screen-data screen) :uint8
-                                (gbref (random 160) (random 144) (random 3)))
+           (setf (sref (screen-data screen) (random 160) (random 144))
                  (random 256)))
 
   (q+:repaint screen))
-
-
-;;;; Init
-(defun gbref (x y c)
-  (+ (* y 256 3)
-     (* x 3)
-     c))
-
-(defun initialize-texture (size)
-  (let ((handle (gl:gen-texture))
-        (data (cffi:foreign-alloc :uint8 :count (* size size 3))))
-    (gl:bind-texture :texture-2d handle)
-
-    (gl:tex-image-2d :texture-2d 0 :rgb size size 0 :rgb :unsigned-byte data)
-    (gl:tex-parameter :texture-2d :texture-min-filter :nearest) ; sharp pixels or gtfo
-    (gl:tex-parameter :texture-2d :texture-mag-filter :nearest)
-    (gl:enable :texture-2d)
-
-    (gl:bind-texture :texture-2d 0)
-
-    (values handle data)))
-
-(define-initializer (screen setup)
-  (setf (q+:window-title screen) "cl-gameboy")
-  (setf (q+:fixed-size screen) (values *width* *height*)))
-
-(define-override (screen "initializeGL") ()
-  (multiple-value-bind (texture data) (initialize-texture 256)
-    (setf (screen-texture screen) texture
-          (screen-data screen) data))
-  (stop-overriding))
 
 
 ;;;; Keyboard
@@ -81,8 +91,8 @@
     (gl:clear :color-buffer-bit)
 
     (gl:bind-texture :texture-2d (screen-texture screen))
-    (gl:tex-sub-image-2d :texture-2d 0 0 0 256 256 :rgb :unsigned-byte
-                         (screen-data screen))
+    (gl:tex-sub-image-2d :texture-2d 0 0 0 256 256 :luminance :unsigned-byte
+                         (screen-raw screen))
 
     (gl:with-primitives :quads
       (gl:tex-coord 0 0)
