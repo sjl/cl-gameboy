@@ -1835,24 +1835,27 @@
 
 
 (defparameter *running* t)
+(defparameter *paused* nil)
 (defparameter *gb* nil)
 
 
 (defun run (gameboy)
   (setf *running* t
+        *paused* nil
         *gb* gameboy)
   (bt:make-thread
     (lambda ()
       (with-gameboy (gameboy)
         (iterate
           (while *running*)
-          ; (for op = (aref *opcodes* (mem-8 gameboy pc)))
-          ; todo does the chopping have to happen AFTER the funcall like in the JS?
-          ; (incf-16 pc)
-          ; (funcall op gameboy)
-          ; (incf clock clock-increment)
-          (sleep 0.0001)
-          (step-gpu gameboy 1)))))
+          (when (not *paused*)
+            ; (for op = (aref *opcodes* (mem-8 gameboy pc)))
+            ; todo does the chopping have to happen AFTER the funcall like in the JS?
+            ; (incf-16 pc)
+            ; (funcall op gameboy)
+            ; (incf clock clock-increment)
+            (sleep 0.0001)
+            (step-gpu gameboy 1))))))
   (->> gameboy gb-gpu gpu-gui gameboy.gui::run-qt-gui))
 
 (defun start ()

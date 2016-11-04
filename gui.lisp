@@ -70,7 +70,9 @@
 ;;;; Keyboard
 (define-override (screen key-release-event) (ev)
   (cond ((= (q+:key ev) (q+:qt.key_escape))
-         (die screen)))
+         (die screen))
+        ((= (q+:key ev) (q+:qt.key_space))
+         (zapf gameboy::*paused* (not %))))
   (stop-overriding))
 
 
