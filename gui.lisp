@@ -14,44 +14,31 @@
 ;;;; Main Window
 (define-widget screen (QGLWidget)
   ((texture :accessor screen-texture)
-   (data :accessor screen-data)
-   (raw :accessor screen-raw)))
+   (data :accessor screen-data :initarg :data)
+   (raw :accessor screen-raw :initarg :raw)))
 
 
 ;;;; Init
 (defun initialize-texture (size)
-  (let* ((handle (gl:gen-texture))
-         (raw (make-array (* size size)
-                 :element-type '(unsigned-byte 8)
-                 :adjustable nil
-                 :fill-pointer nil))
-         (data (make-array (list size size)
-                 :element-type '(unsigned-byte 8)
-                 :displaced-to raw)))
+  (let* ((handle (gl:gen-texture)))
     (gl:bind-texture :texture-2d handle)
 
-    (iterate (for-nested ((x :from 0 :below 160)
-                          (y :from 0 :below 144)))
-             (setf (sref data x y) (truncate (* 255 (/ x 160)))))
-
-    (gl:tex-image-2d :texture-2d 0 :luminance size size 0 :luminance :unsigned-byte raw)
+    (gl:tex-image-2d :texture-2d 0 :luminance size size 0 :luminance
+                     :unsigned-byte (cffi:null-pointer))
     (gl:tex-parameter :texture-2d :texture-min-filter :nearest) ; sharp pixels or gtfo
     (gl:tex-parameter :texture-2d :texture-mag-filter :nearest)
     (gl:enable :texture-2d)
 
     (gl:bind-texture :texture-2d 0)
 
-    (values handle data raw)))
+    handle))
 
 (define-initializer (screen setup)
   (setf (q+:window-title screen) "cl-gameboy")
   (setf (q+:fixed-size screen) (values *width* *height*)))
 
 (define-override (screen "initializeGL") ()
-  (multiple-value-bind (texture data raw) (initialize-texture 256)
-    (setf (screen-texture screen) texture
-          (screen-data screen) data
-          (screen-raw screen) raw))
+  (setf (screen-texture screen) (initialize-texture 256))
   (stop-overriding))
 
 
@@ -72,10 +59,8 @@
 
 ;;;; Keyboard
 (define-override (screen key-release-event) (ev)
-  ; (cond ((= (q+:key ev) (q+:qt.key_left))
-  ;        (decf angle-delta))
-  ;       ((= (q+:key ev) (q+:qt.key_right))
-  ;        (incf angle-delta)))
+  (cond ((= (q+:key ev) (q+:qt.key_escape))
+         (q+:close screen)))
   (stop-overriding))
 
 
@@ -90,7 +75,7 @@
     (gl:clear :color-buffer-bit)
 
     (gl:bind-texture :texture-2d (screen-texture screen))
-    (gl:tex-sub-image-2d :texture-2d 0 0 0 256 256 :luminance :unsigned-byte
+    (gl:tex-sub-image-2d :texture-2d 0 0 0 160 144 :luminance :unsigned-byte
                          (screen-raw screen))
 
     (gl:with-primitives :quads
@@ -112,5 +97,39 @@
 
 
 ;;;; Main
+(defstruct (qt-gui (:constructor make-qt-gui%))
+  data raw)
+
+(defun make-qt-gui ()
+  (let* ((raw (make-array (* 144 160)
+                :element-type '(unsigned-byte 8)
+                :adjustable nil
+                :fill-pointer nil))
+         (data (make-array (list 144 160)
+                 :element-type '(unsigned-byte 8)
+                 :displaced-to raw)))
+    (make-qt-gui% :data data :raw raw)))
+
+(defun run-qt-gui (g)
+  (with-main-window
+    (window (make-instance 'screen
+              :data (qt-gui-data g)
+              :raw (qt-gui-raw g)))))
+
+
+(defun blit-pixel (gui x y value)
+  (setf (sref (screen-data (qt-gui-data gui)) x y)
+        (ecase value
+          (0 255)
+          (1 170)
+          (2 85)
+          (3 0))))
+
+(defun refresh-screen (gui)
+  (declare (ignore gui)))
+
+
 (defun main ()
-  (with-main-window (window (make-instance 'screen))))
+  (run-qt-gui (make-qt-gui)))
+
+
