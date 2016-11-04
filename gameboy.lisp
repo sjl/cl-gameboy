@@ -422,7 +422,7 @@
     (if array
       (setf (aref array address) value)
       (error "Cannot write to memory address ~X" address)))
-  (if (<= #x8000 address (1- #xA000))
+  (if (<= #x8000 address (1- #x9800))
     (update-tile-memory gameboy address)))
 
 (defun (setf mem-16) (value gameboy address)
@@ -498,13 +498,19 @@
              (background-map-ref (x)
                ;; Take a screen X coordinate and retrieve the tile id from the
                ;; appropriate background map.
+               ;;
+               ;; The background map is stored in a hunk of VRAM.  Each element
+               ;; is a single byte (the tile ID).
+               ;;
+               ;; 0,0 0,1 0,2 0,3 0,4 ... 0,32
+               ;; 1,0 1,1 1,2 1,3 1,4 ... 1,32
                (tile-id (aref ram (+ (if (zerop background-map) #x1800 #x1c00)
-                                     (-<> scroll-y
-                                       (+ line <>)
-                                       (chop-8 <>)
-                                       (ash <> -3)
-                                       (* 2 32 <>))
-                                     (mod (+ scroll-x x) 8))))))
+                                     (-<> scroll-y  ; start at the scroll offset
+                                       (+ line <>)  ; add the current line
+                                       (chop-8 <>)  ;         with an 8-bit add
+                                       (floor <> 8) ; each tile is 8 rows tall
+                                       (* 32 <>))   ; 32 tiles per row
+                                     (floor (+ scroll-x x) 8))))))
       (iterate
         (with g = gui)
         (with y = line)
@@ -514,7 +520,7 @@
 
         (for x :from 0 :below 160)
         (for full-x = (+ x sx))
-        (for color = (tile-pixel cache (background-map-ref full-x)
+        (for color = (tile-pixel cache (background-map-ref x)
                                  tile-row (mod full-x 8)))
         (gameboy.gui::blit-pixel g x y (palette-map gameboy color)))))
   nil)
