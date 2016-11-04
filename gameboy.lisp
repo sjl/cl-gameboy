@@ -246,9 +246,10 @@
   (mode 0 :type (integer 0 3))
   (clock 0 :type fixnum) ; fuck it, close enough
   (line 0 :type (integer 0 154))
-  (background-map 0 :type bit)
   (scroll-x 0 :type (unsigned-byte 8))
-  (scroll-y 0 :type (unsigned-byte 8)))
+  (scroll-y 0 :type (unsigned-byte 8))
+  (palette 0 :type (unsigned-byte 8))
+  (control 0 :type (unsigned-byte 8)))
 
 (defstruct (gameboy (:conc-name gb-))
   (clock 0 :type int8)
@@ -294,8 +295,16 @@
 
 (define-with-macro (gpu)
   gui ram tile-cache
-  mode clock line background-map
-  scroll-x scroll-y)
+  mode clock line
+  scroll-x scroll-y palette control
+  flag-background
+  flag-sprites
+  flag-sprites-size
+  flag-background-tile-map
+  flag-background-tile-set
+  flag-window
+  flag-window-tile-map
+  flag-display)
 
 (define-with-macro (gameboy :conc-name gb)
   a b c d e h l f pc sp clock clock-increment af bc de hl halt
@@ -306,22 +315,44 @@
   (print-unreadable-object (object stream :type t :identity t)))
 
 
-;;;; Flag Register ------------------------------------------------------------
+;;;; Flag Registers -----------------------------------------------------------
 (declaim (inline set-flag))
 
-(defmacro define-flag (name position)
-  (let ((full-name (symb 'gb-flag- name)))
+(defmacro define-flag (type prefix register position name)
+  (let ((full-name (symb prefix '-flag- name))
+        (place `(,(symb prefix '- register) ,type)))
     `(progn
-      (declaim (inline ,full-name)
-               (ftype (function (gameboy) bit)
-                      ,full-name))
-      (defun ,full-name (gameboy)
-        (bit ,position (gb-f gameboy))))))
+      (declaim
+        (inline ,full-name (setf ,full-name))
+        (ftype (function (,type) (values bit &optional)) ,full-name)
+        (ftype (function (bit ,type) (values bit &optional)) (setf ,full-name)))
 
-(define-flag zero 7)
-(define-flag subtract 6)
-(define-flag half-carry 5)
-(define-flag carry 4)
+      (defun ,full-name (,type)
+        (bit ,position ,place))
+
+      (defun (setf ,full-name) (value ,type)
+        (setf (ldb (byte 1 ,position) ,place) value)))))
+
+(macro-map ; CPU Flag Register
+  ((bit name)
+   ((7 zero)
+    (6 subtract)
+    (5 half-carry)
+    (4 carry)))
+  `(define-flag gameboy gb f ,bit ,name))
+
+(macro-map ; GPU Control Flags
+  ((bit name)
+   ((0 background)
+    (1 sprites)
+    (2 sprites-size)
+    (3 background-tile-map)
+    (4 background-tile-set)
+    (5 window)
+    (6 window-tile-map)
+    (7 display)))
+  `(define-flag gpu gpu control ,bit ,name))
+
 
 (declaim (ftype (function
                   (gameboy &key (:zero t) (:subtract t) (:half-carry t) (:carry t))
@@ -333,17 +364,15 @@
                  (subtract :preserve)
                  (half-carry :preserve)
                  (carry :preserve))
-  (flet ((set-flag% (flag index value)
-           (if (eq :preserve flag)
-             value
-             (set-bit index value (to-bit flag)))))
-    (declare (inline set-flag%))
-    (zapf (gb-f gameboy)
-          (-<> %
-            (set-flag% zero 7 <>)
-            (set-flag% subtract 6 <>)
-            (set-flag% half-carry 5 <>)
-            (set-flag% carry 4 <>)))))
+  (macrolet ((sf (flag)
+               `(when (not (eq :preserve ,flag))
+                 (setf (,(symb 'gb-flag- flag) gameboy)
+                       (to-bit ,flag)))))
+    (sf zero)
+    (sf subtract)
+    (sf half-carry)
+    (sf carry))
+  (gb-f gameboy))
 
 
 ;;;; More Utils ---------------------------------------------------------------
@@ -372,46 +401,76 @@
 
 ;;;; Memory -------------------------------------------------------------------
 (declaim
-  (ftype (function (gameboy int16) (values t t)) find-memory)
   (ftype (function (gameboy int16) int8) mem-8)
   (ftype (function (gameboy int16) int16) mem-16)
   (ftype (function (int8 gameboy int16)) (setf mem-8))
   (ftype (function (int16 gameboy int16)) (setf mem-16)))
 
 
-(defun find-memory (gameboy address)
+(defun mem-8 (gameboy address)
   (with-mmu ((gb-mmu gameboy))
-    (case-range address
+    (cond
       ;; BIOS/ROM
-      (256 (values (if in-bios bios rom) address))
-      ((- (k 32) 256) (values rom address))
+      ((< address 256) (aref (if in-bios bios rom) address))
+      ((< address #x4000) (aref rom address))
+      ((< address #x8000) (error "ROM banks unimplemented"))
 
-      ;; VRAM/ERAM/WRAM
-      ((k 8) (values (gpu-ram (gb-gpu gameboy)) (- address #x8000)))
-      ((k 8) (values external-ram (- address #xA000)))
-      ((k 8) (values working-ram (- address #xC000)))
-      ((- (k 8) 512) ; Shadow WRAM
-       (values working-ram (- address #xC000)))
+      ;; VRAM/ERAM/WRAM/Shadow WRAM
+      ((< address #xA000) (aref (gpu-ram (gb-gpu gameboy))
+                                (- address #x8000)))
+      ((< address #xC000) (aref external-ram (- address #xA000)))
+      ((< address #xE000) (aref working-ram (- address #xC000)))
+      ((< address #xFE00) (aref working-ram (- address #xE000)))
 
       ;; OAM
-      (160 (values nil nil)) ; todo: oam
-      ((- 256 160) (values nil nil)) ; todo: constant 0
+      ((< address #xFF00) (error "OAM unimplemented"))
 
       ;; I/O
-      (128 (values nil nil)) ; todo: i/o
+      ((= address #xFF40) (gpu-control (gb-gpu gameboy)))
+      ((= address #xFF42) (gpu-scroll-y (gb-gpu gameboy)))
+      ((= address #xFF43) (gpu-scroll-x (gb-gpu gameboy)))
+      ((= address #xFF44) (gpu-line (gb-gpu gameboy)))
+      ((= address #xFF47) (error "GPU palette is write-only"))
+      ((< address #xFF80) (error "I/O unimplemented"))
 
       ;; Zero Page
-      (128 (values zero-page-ram (ldb (byte 7 0) address)))
+      ((<= address #xFFFF) (aref zero-page-ram (- address #xFF80)))
 
       ;; Wat
       (t (error "Bad memory address: ~X" address)))))
 
+(defun (setf mem-8) (value gameboy address)
+  (with-mmu ((gb-mmu gameboy))
+    (cond
+      ;; BIOS/ROM
+      ((< address 256) (setf (aref (if in-bios bios rom) address) value))
+      ((< address #x4000) (setf (aref rom address) value))
+      ((< address #x8000) (error "ROM banks unimplemented"))
 
-(defun mem-8 (gameboy address)
-  (multiple-value-bind (array address) (find-memory gameboy address)
-    (if array
-      (aref array address)
-      0)))
+      ;; VRAM/ERAM/WRAM/Shadow WRAM
+      ((< address #xA000) (setf (aref (gpu-ram (gb-gpu gameboy))
+                                      (- address #x8000))
+                                value))
+      ((< address #xC000) (setf (aref external-ram (- address #xA000)) value))
+      ((< address #xE000) (setf (aref working-ram (- address #xC000)) value))
+      ((< address #xFE00) (setf (aref working-ram (- address #xE000)) value))
+
+      ;; OAM
+      ((< address #xFF00) (error "OAM unimplemented"))
+
+      ;; I/O
+      ((= address #xFF40) (setf (gpu-control (gb-gpu gameboy)) value))
+      ((= address #xFF42) (setf (gpu-scroll-y (gb-gpu gameboy)) value))
+      ((= address #xFF43) (setf (gpu-scroll-x (gb-gpu gameboy)) value))
+      ((= address #xFF44) (error "GPU scanline register is read-only"))
+      ((= address #xFF47) (setf (gpu-palette (gb-gpu gameboy)) value)) 
+      ((< address #xFF80) (error "I/O unimplemented"))
+
+      ;; Zero Page
+      ((<= address #xFFFF) (setf (aref zero-page-ram (- address #xFF80)) value))
+
+      ;; Wat
+      (t (error "Cannot write to memory address: ~X" address)))))
 
 (defun mem-16 (gameboy address)
   (cat (mem-8 gameboy address)
@@ -489,40 +548,46 @@
 
 
 (defun scanline (gameboy)
-  (with-gpu ((gb-gpu gameboy))
-    (gameboy.gui::set-debug gui `(line ,line))
-    (labels ((tile-id (byte)
-               (if (zerop background-map)
-                 byte
-                 (+ 256 (unsigned-to-signed-8 byte))))
-             (background-map-ref (x)
-               ;; Take a screen X coordinate and retrieve the tile id from the
-               ;; appropriate background map.
-               ;;
-               ;; The background map is stored in a hunk of VRAM.  Each element
-               ;; is a single byte (the tile ID).
-               ;;
-               ;; 0,0 0,1 0,2 0,3 0,4 ... 0,32
-               ;; 1,0 1,1 1,2 1,3 1,4 ... 1,32
-               (tile-id (aref ram (+ (if (zerop background-map) #x1800 #x1c00)
-                                     (-<> scroll-y  ; start at the scroll offset
-                                       (+ line <>)  ; add the current line
-                                       (chop-8 <>)  ;         with an 8-bit add
-                                       (floor <> 8) ; each tile is 8 rows tall
-                                       (* 32 <>))   ; 32 tiles per row
-                                     (floor (+ scroll-x x) 8))))))
-      (iterate
-        (with g = gui)
-        (with y = line)
-        (with cache = tile-cache)
-        (with tile-row = (mod (+ y scroll-y) 8))
-        (with sx = scroll-x)
+  (let ((gpu (gb-gpu gameboy)))
+    (with-gpu (gpu)
+      (let ((background-map-offset
+              ;; The background map is stored in a hunk of VRAM.  Each element
+              ;; is a single byte (the tile ID).
+              ;;
+              ;; 0,0 0,1 0,2 0,3 0,4 ... 0,32
+              ;; 1,0 1,1 1,2 1,3 1,4 ... 1,32
+              (+ (if (zerop flag-background-tile-map)
+                   #x1800
+                   #x1c00)
+                 (-<> scroll-y  ; start at the scroll offset
+                   (+ line <>)  ; add the current line
+                   (chop-8 <>)  ;         with an 8-bit add
+                   (floor <> 8) ; each tile is 8 rows tall
+                   (* 32 <>))))) ; 32 tiles per row
+        (gameboy.gui::set-debug gui `(line ,line))
+        (labels ((tile-id (byte)
+                   (if (zerop flag-background-tile-set)
+                     byte
+                     (+ 256 (unsigned-to-signed-8 byte))))
+                 (background-map-ref (x)
+                   ;; Take a screen X coordinate and retrieve the tile id from the
+                   ;; appropriate background map.
+                   (-<> background-map-offset
+                     (+ <> (floor (+ scroll-x x) 8))
+                     (aref ram <>)
+                     (tile-id <>))))
+          (iterate
+            (with g = gui)
+            (with y = line)
+            (with cache = tile-cache)
+            (with tile-row = (mod (+ y scroll-y) 8))
+            (with sx = scroll-x)
 
-        (for x :from 0 :below 160)
-        (for full-x = (+ x sx))
-        (for color = (tile-pixel cache (background-map-ref x)
-                                 tile-row (mod full-x 8)))
-        (gameboy.gui::blit-pixel g x y (palette-map gameboy color)))))
+            (for x :from 0 :below 160)
+            (for full-x = (+ x sx))
+            (for color = (tile-pixel cache (background-map-ref x)
+                                     tile-row (mod full-x 8)))
+            (gameboy.gui::blit-pixel g x y (palette-map gameboy color)))))))
   nil)
 
 (defun step-gpu (gameboy cycles)
