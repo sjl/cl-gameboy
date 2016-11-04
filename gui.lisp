@@ -7,15 +7,18 @@
 (defparameter *width* (* *scale* 160))
 (defparameter *height* (* *scale* 144))
 
+(deftype screen-data-array ()
+  '(simple-array (unsigned-byte 8) (#.(* 144 160))))
+
+
 (defmacro sref (arr x y)
-  `(aref ,arr ,y ,x))
+  `(aref ,arr (+ (* 160 ,y) ,x)))
 
 
 ;;;; Main Window
 (define-widget screen (QGLWidget)
   ((texture :accessor screen-texture)
-   (data :accessor screen-data :initarg :data)
-   (raw :accessor screen-raw :initarg :raw)))
+   (data :accessor screen-data :initarg :data)))
 
 
 ;;;; Init
@@ -78,7 +81,7 @@
 
     (gl:bind-texture :texture-2d (screen-texture screen))
     (gl:tex-sub-image-2d :texture-2d 0 0 0 160 144 :luminance :unsigned-byte
-                         (screen-raw screen))
+                         (screen-data screen))
 
     (gl:with-primitives :quads
       (gl:tex-coord 0 0)
@@ -100,32 +103,35 @@
 
 ;;;; Main
 (defstruct (qt-gui (:constructor make-qt-gui%))
-  data raw)
+  (data (error "Required.") :type screen-data-array))
 
 (defun make-qt-gui ()
-  (let* ((raw (make-array (* 144 160)
+  (let* ((data (make-array (* 144 160)
                 :element-type '(unsigned-byte 8)
                 :adjustable nil
-                :fill-pointer nil))
-         (data (make-array (list 144 160)
-                 :element-type '(unsigned-byte 8)
-                 :displaced-to raw)))
-    (make-qt-gui% :data data :raw raw)))
+                :fill-pointer nil)))
+    (check-type data screen-data-array) ; make sure I didn't fuck up the deftype
+    (make-qt-gui% :data data)))
 
 (defun run-qt-gui (g)
   (with-main-window
-    (window (make-instance 'screen
-              :data (qt-gui-data g)
-              :raw (qt-gui-raw g)))))
+    (window (make-instance 'screen :data (qt-gui-data g)))))
 
 
 (defun blit-pixel (gui x y value)
-  (setf (sref (screen-data (qt-gui-data gui)) x y)
-        (ecase value
-          (0 255)
-          (1 170)
-          (2 85)
-          (3 0))))
+  (declare (optimize (speed 3) (debug 0) (safety 1))
+           (type qt-gui gui)
+           (type (integer 0 (160)) x)
+           (type (integer 0 (144)) y)
+           (type (integer 0 3) value))
+  (setf (sref (qt-gui-data gui) x y)
+        (case value
+          (0 180)
+          (1 120)
+          (2 60)
+          (3 0)
+          (t 255)))
+  nil)
 
 (defun refresh-screen (gui)
   (declare (ignore gui)))
