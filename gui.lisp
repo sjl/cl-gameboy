@@ -19,11 +19,37 @@
 (define-widget screen (QGLWidget)
   ((texture :accessor screen-texture)
    (data :accessor screen-data :initarg :data)
-   (gui :accessor screen-gui :initarg :gui)))
+   (gui :accessor screen-gui :initarg :gui)
+   (debugger :accessor screen-debugger)))
 
 (defun die (screen)
-  (q+:close screen)
-  (setf gameboy::*running* nil))
+  (setf gameboy::*running* nil)
+  (when (slot-boundp screen 'debugger)
+    (q+:close (screen-debugger screen)))
+  (q+:close screen))
+
+
+;;;; Debug Window
+(define-widget debugger (QDialog)
+  ())
+
+(define-subwidget (debugger pause-button)
+  (q+:make-qpushbutton "Pause" debugger))
+
+(define-subwidget (debugger slow-button)
+  (q+:make-qpushbutton "Slow" debugger))
+
+(define-subwidget (debugger layout) (q+:make-qvboxlayout debugger)
+  (q+:add-widget layout slow-button)
+  (q+:add-widget layout pause-button))
+
+(define-slot (debugger pause-pressed) ()
+  (declare (connected pause-button (released)))
+  (zapf gameboy::*paused* (not %)))
+
+(define-slot (debugger slow-pressed) ()
+  (declare (connected slow-button (released)))
+  (zapf gameboy::*slow* (not %)))
 
 
 ;;;; Init
@@ -43,7 +69,10 @@
 
 (define-initializer (screen setup)
   (setf (q+:window-title screen) "cl-gameboy")
-  (setf (q+:fixed-size screen) (values *width* *height*)))
+  (setf (q+:fixed-size screen) (values *width* *height*))
+
+  (setf (screen-debugger screen) (make-instance 'debugger))
+  (q+:show (screen-debugger screen)))
 
 (define-override (screen "initializeGL") ()
   (setf (screen-texture screen) (initialize-texture 256))
@@ -72,7 +101,9 @@
   (cond ((= (q+:key ev) (q+:qt.key_escape))
          (die screen))
         ((= (q+:key ev) (q+:qt.key_space))
-         (zapf gameboy::*paused* (not %))))
+         (zapf gameboy::*paused* (not %)))
+        ((= (q+:key ev) (q+:qt.key_s))
+         (setf gameboy::*step* t)))
   (stop-overriding))
 
 
