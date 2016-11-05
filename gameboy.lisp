@@ -3,9 +3,10 @@
 
 (setf *print-length* 3)
 (declaim (optimize (speed 1) (safety 3) (debug 3)))
-; (declaim (optimize (speed 3) (safety 0) (debug 0)))
+(declaim (optimize (speed 3) (safety 0) (debug 0)))
 
 (defun :i () SB-EXT:*INSPECTED*)
+
 
 ;;;; Types & Constants --------------------------------------------------------
 (deftype int8 () '(unsigned-byte 8))
@@ -37,7 +38,7 @@
 
 
 ;;;; Utils --------------------------------------------------------------------
-(declaim (inline k))
+(declaim (inline k nonzerop))
 
 (defun k (n)
   (* 1024 n))
@@ -59,22 +60,24 @@
                      :initial-contents *bios*))
 
 
-(defmacro case-range (value &rest exprs)
-  (once-only (value)
-    `(cond
-      ,@(iterate
-         (for (condition . body) :in exprs)
-         (if (eq t condition)
-           (collect `(t ,@body))
-           (progn (collect condition :into prefixes)
-                  (collect `((< ,value (+ ,@(copy-seq prefixes)))
-                             ,@body))))))))
-
 (defmacro macro-map ((lambda-list items) &rest body)
   (with-gensyms (macro)
     `(macrolet ((,macro ,(ensure-list lambda-list) ,@body))
       ,@(iterate (for item :in items)
                  (collect `(,macro ,@(ensure-list item)))))))
+
+
+(defun nonzerop (i)
+  (not (zerop i)))
+
+
+(defmacro case-bit (expr &body clauses)
+  (once-only (expr)
+    `(cond
+      ,@(iterate (for (bit . body) :in clauses)
+         (collect (if (eq bit t)
+                    `(t ,@body)
+                    `((logbitp ,bit ,expr) ,@body)))))))
 
 
 ;;;; Bit Fuckery --------------------------------------------------------------
@@ -275,7 +278,9 @@
   (f 0 :type int8)
   (pc 0 :type int16)
   (sp 0 :type int16)
-  (ime nil :type boolean)
+  (interrupt-enable 0 :type int8)
+  (interrupt-flags 0 :type int8)
+  (interrupt-master nil :type boolean)
   (mmu (make-mmu) :type mmu)
   (gpu (make-gpu) :type gpu)
   (halt 0 :type int8))
@@ -323,7 +328,8 @@
 
 (define-with-macro (gameboy :conc-name gb)
   a b c d e h l f pc sp
-  ime clock clock-increment af bc de hl halt
+  interrupt-master interrupt-enable interrupt-flags
+  clock clock-increment af bc de hl halt
   flag-zero flag-subtract flag-half-carry flag-carry)
 
 
@@ -332,7 +338,13 @@
 
 
 ;;;; Flag Registers -----------------------------------------------------------
-(declaim (inline set-flag))
+(declaim (inline set-flag
+                 interrupt-bit
+                 interrupt-enabled-p
+                 interrupt-fired-p
+                 interrupt-ready-p
+                 mark-interrupt
+                 clear-interrupt))
 
 (defmacro define-flag (type prefix register position name)
   (let ((full-name (symb prefix '-flag- name))
@@ -391,6 +403,37 @@
   (gb-f gameboy))
 
 
+(defun interrupt-bit (interrupt)
+  (ecase interrupt
+    (:vblank 0)
+    (:lcd-stat 1)
+    (:timer 2)
+    (:serial 3)
+    (:joypad 4)))
+
+(defun interrupt-enabled-p (gameboy interrupt)
+  (bit (interrupt-bit interrupt)
+       (gb-interrupt-enable gameboy)))
+
+(defun interrupt-fired-p (gameboy interrupt)
+  (= 1 (bit (interrupt-bit interrupt)
+            (gb-interrupt-enable gameboy))))
+
+(defun interrupt-ready-p (gameboy interrupt)
+  (and (interrupt-enabled-p gameboy interrupt)
+       (interrupt-fired-p gameboy interrupt)))
+
+(defun mark-interrupt (gameboy interrupt)
+  (setf (ldb (byte 1 (interrupt-bit interrupt))
+             (gb-interrupt-flags gameboy))
+        1))
+
+(defun clear-interrupt (gameboy interrupt)
+  (setf (ldb (byte 1 (interrupt-bit interrupt))
+             (gb-interrupt-flags gameboy))
+        0))
+
+
 ;;;; More Utils ---------------------------------------------------------------
 (declaim (inline increment-clock increment-pc
                  stack-push stack-pop))
@@ -398,7 +441,7 @@
 
 (defun increment-clock (gameboy &optional (machine-cycles 1))
   (with-gameboy (gameboy)
-    (setf clock-increment machine-cycles)))
+    (incf clock-increment machine-cycles)))
 
 (defun increment-pc (gameboy &optional (increment 1))
   (incf-16 (gb-pc gameboy) increment))
@@ -428,6 +471,7 @@
     (cond
       ;; BIOS/ROM
       ((< address 256) (aref (if in-bios bios rom) address))
+      ((= address 256) (setf in-bios nil) (aref rom address))
       ((< address #x4000) (aref rom address))
 
       ;; ROM Banks
@@ -446,6 +490,9 @@
       ;; OAM
       ((< address #xFF00) (error "Read OAM unimplemented ~4,'0X" address))
 
+      ;; Interrupt Flags
+      ((= address #xFF0F) (gb-interrupt-flags gameboy))
+
       ;; I/O
       ((<= #xFF10 address #xFF3F) 0) ; todo: sound
       ((= address #xFF40) (gpu-control (gb-gpu gameboy)))
@@ -463,6 +510,9 @@
 
       ;; Zero Page
       ((<= address #xFFFF) (aref zero-page-ram (- address #xFF80)))
+
+      ;; Interrupt-Enable
+      ((= address #xFFFF) (gb-interrupt-enable gameboy))
 
       ;; Wat
       (t (error "Bad memory address: ~X" address)))))
@@ -496,6 +546,9 @@
       ;; OAM
       ((< address #xFF00) (error "Write OAM unimplemented ~4,'0X" address))
 
+      ;; Interrupt Flags
+      ((= address #xFF0F) (setf (gb-interrupt-flags gameboy) value))
+
       ;; I/O
       ((<= #xFF10 address #xFF3F) 0) ; todo: sound
       ((= address #xFF40) (setf (gpu-control (gb-gpu gameboy)) value))
@@ -517,7 +570,10 @@
       ((< address #xFF80) (error "Write I/O unimplemented ~4,'0X" address))
 
       ;; Zero Page
-      ((<= address #xFFFF) (setf (aref zero-page-ram (- address #xFF80)) value))
+      ((< address #xFFFF) (setf (aref zero-page-ram (- address #xFF80)) value))
+
+      ;; Interrupt-Enable
+      ((= address #xFFFF) (setf (gb-interrupt-enable gameboy) value))
 
       ;; Wat
       (t (error "Cannot write to memory address: ~X" address)))))
@@ -623,7 +679,7 @@
                    (chop-8 <>)  ;         with an 8-bit add
                    (floor <> 8) ; each tile is 8 rows tall
                    (* 32 <>))))) ; 32 tiles per row
-        (gameboy.gui::set-debug gui `(line ,line))
+        (gameboy.gui::set-debug gui `())
         (labels ((tile-id (byte)
                    (if (zerop flag-background-tile-set)
                      ; tileset 0 is signed
@@ -665,27 +721,31 @@
            ;; Once HBlank is finished, increment the line and flip back to OAM
            ;; mode.  Unless this was the LAST line, then render the frame to the
            ;; physical screen and go into VBlank instead.
-           (setf clock 0)
+           (decf clock 204)
            (incf line)
            (if (= line 143)
              (progn (gameboy.gui::refresh-screen gui)
-                    (setf mode 1))
+                    (sleep 1/30)
+                    (setf mode 1)
+                    (mark-interrupt gameboy :vblank))
              (setf mode 2))))
       ;; VBlank
       (1 (when (>= clock 456)
-           (setf clock 0)
+           (decf clock 456)
            (incf line)
            (when (> line 153)
              (setf mode 2 line 0))))
       ;; Scan (OAM)
       (2 (when (>= clock 80)
            ;; When the OAM portion of the scanline is done, just flip the mode.
-           (setf clock 0 mode 3)))
+           (decf clock 80)
+           (setf mode 3)))
       ;; Scan (VRAM)
       (3 (when (>= clock 172)
            ;; When the VRAM portion of the scanline is done, flip the mode and
            ;; also blit the scanline into the framebuffer.
-           (setf clock 0 mode 0)
+           (decf clock 0)
+           (setf mode 0)
            (scanline gameboy))))))
 
 
@@ -1348,12 +1408,24 @@
 
 ;;; Interrupts
 (define-opcode di ()                                   ; DI
-  (setf ime nil) ; todo fix for the real-world 1-instr lag)
+  (setf interrupt-master nil) ; todo fix for the real-world 1-instr lag)
   (increment-clock gameboy 1))
 
 (define-opcode ei ()                                   ; EI
-  (setf ime t) ; todo fix for the real-world 1-instr lag
+  (setf interrupt-master t) ; todo fix for the real-world 1-instr lag
   (increment-clock gameboy 1))
+
+(macro-map                                             ; RST addr
+  ((address) (#x00 #x08 #x10 #x18 #x20 #x28 #x30 #x38 #x40 #x48 #x50 #x58 #x60))
+  `(define-opcode ,(symb 'rst- (format nil "~2,'0X" address)) ()
+    (stack-push gameboy pc)
+    (setf pc ,address)
+    (increment-clock gameboy 4)))
+
+(define-opcode reti ()                                 ; RETI
+  (setf pc (stack-pop gameboy)
+        interrupt-master t)
+  (increment-clock gameboy 2))
 
 
 ;;; Extended Opcodes
@@ -1576,7 +1648,7 @@
     (#xC4 call-nz-i)
     (#xC5 push-r/bc)
     ; (#xC6 )
-    ; (#xC7 )
+    (#xC7 rst-00)
     ; (#xC8 )
     (#xC9 ret)
     ; (#xCA )
@@ -1584,7 +1656,7 @@
     ; (#xCC )
     (#xCD call-i)
     ; (#xCE )
-    ; (#xCF )
+    (#xCF rst-08)
 
     ; (#xD0 )
     (#xD1 pop-r/de)
@@ -1593,15 +1665,15 @@
     ; (#xD4 )
     (#xD5 push-r/de)
     ; (#xD6 )
-    ; (#xD7 )
+    (#xD7 rst-10)
     ; (#xD8 )
-    ; (#xD9 )
+    (#xD9 reti)
     ; (#xDA )
     ; (#xDB )
     ; (#xDC )
     ; (#xDD )
     ; (#xDE )
-    ; (#xDF )
+    (#xDF rst-18)
 
     (#xE0 ldh-mem/i<r/a)
     (#xE1 pop-r/hl)
@@ -1610,7 +1682,7 @@
     ; (#xE4 )
     (#xE5 push-r/hl)
     (#xE6 and-r/a<i)
-    ; (#xE7 )
+    (#xE7 rst-20)
     ; (#xE8 )
     ; (#xE9 )
     (#xEA ld-mem/i<r/a)
@@ -1618,7 +1690,7 @@
     ; (#xEC )
     ; (#xED )
     ; (#xEE )
-    ; (#xEF )
+    (#xEF rst-28)
 
     (#xF0 ldh-r/a<mem/i)
     (#xF1 pop-r/af)
@@ -1627,7 +1699,7 @@
     ; (#xF4 )
     (#xF5 push-r/af)
     (#xF6 or-r/a<i)
-    ; (#xF7 )
+    (#xF7 rst-30)
     ; (#xF8 )
     ; (#xF9 )
     (#xFA ld-r/a<mem/i)
@@ -1635,7 +1707,7 @@
     ; (#xFC )
     ; (#xFD )
     (#xFE cp-r/a=i)
-    ; (#xFF )
+    (#xFF rst-38)
     ))
 
 (defparameter *extended-list*
@@ -1944,8 +2016,10 @@
       (format t "  ~{ ~A: #x~2,'0X~^     ~}~%" (slotmap (a b c d)))
       (format t "  ~{ ~A: #x~2,'0X~^     ~}~%" (slotmap (e h l f)))
       (format t "  ~{~A: #x~4,'0X   ~}~%" (slotmap (af bc de hl)))
-      (format t "  ~{~A: #x~4,'0X   ~}~%" (slotmap (pc sp)))
-      (format t "  Flags: #b~8,'0B   IME: ~A   HALT: #x~2,'0X~%" f ime halt)
+      (format t "  ~{~A: #x~4,'0X   ~}~%" (slotmap (sp pc)))
+      (format t "  Flags: #b~8,'0B/~2,'0X   IME: ~A   HALT: #x~2,'0X~%" f f interrupt-master halt)
+      (format t "     IE: #b~8,'0B/~2,'0X~%" interrupt-enable interrupt-enable)
+      (format t "     IF: #b~8,'0B/~2,'0X~%" interrupt-flags interrupt-flags)
       (format t "  Clock: ~D~%" clock)
       (terpri))
     (with-gpu ((gb-gpu gameboy))
@@ -1956,15 +2030,34 @@
       (format t "     LINE: ~D~%" line)
       (format t "  LINECMP: ~D~%" line-compare)
       (format t "     MODE: ~D~%" mode)
-      (format t "  CONTROL: #b~8,'0B~%" control)
-      (format t "     STAT: #b~8,'0B~%" stat)
+      (format t "  CONTROL: #b~8,'0B/~2,'0X~%" control control)
+      (format t "     STAT: #b~8,'0B/~2,'0X~%" stat stat)
       (terpri))
     (finish-output)))
 
 
+(defun dispatch-interrupts (gameboy)
+  (with-gameboy (gameboy)
+    (when (and interrupt-master
+               (nonzerop interrupt-enable)
+               (nonzerop interrupt-flags))
+      (setf halt 0 interrupt-master nil)
+      (macrolet ((b (i op)
+                   `((interrupt-bit ,i)
+                     (,op gameboy)
+                     (clear-interrupt gameboy ,i))))
+        (case-bit (logand interrupt-enable interrupt-flags)
+          (0 (op-rst-40 gameboy) (clear-interrupt gameboy :vblank))
+          (1 (op-rst-48 gameboy) (clear-interrupt gameboy :lcd-stat))
+          (2 (op-rst-50 gameboy) (clear-interrupt gameboy :timer))
+          (3 (op-rst-58 gameboy) (clear-interrupt gameboy :serial))
+          (4 (op-rst-60 gameboy) (clear-interrupt gameboy :joypad))
+          (t (setf interrupt-master t)))))))
+
+
 (defun run (gameboy)
   (load-opcode-tables)
-  (load-rom gameboy "roms/opus5.gb")
+  (load-rom gameboy "roms/opus1.gb")
   (setf *running* t *gb* gameboy)
   (bt:make-thread
     (lambda ()
@@ -1978,10 +2071,12 @@
                      (setf *paused* t))
               (if (or *step* (not *paused*))
                 (progn
+                  (setf clock-increment 0)
                   (for opcode = (mem-8 gameboy pc))
                   (for op = (aref *opcodes* opcode))
                   (incf-16 pc)
                   (funcall op gameboy)
+                  (dispatch-interrupts gameboy)
                   (incf clock clock-increment)
                   (step-gpu gameboy clock-increment)
                   (when *step*
@@ -1996,7 +2091,4 @@
 
 
 ;;;; TODO ---------------------------------------------------------------------
-;;; * Automatically call opcodes with their operands
-;;; * RETI, RST* and other interrupty stuff
 ;;; * STOP opcode
-;;; * DI/EI interrupt stuff

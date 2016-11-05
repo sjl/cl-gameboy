@@ -3,7 +3,7 @@
 
 
 ;;;; Config
-(defparameter *scale* 5)
+(defparameter *scale* 2)
 (defparameter *width* (* *scale* 160))
 (defparameter *height* (* *scale* 144))
 
@@ -82,7 +82,7 @@
 ;;;; Timer
 (define-subwidget (screen timer) (q+:make-qtimer screen)
   (setf (q+:single-shot timer) NIL)
-  (q+:start timer (round 1000/30)))
+  (q+:start timer (round 1000/60)))
 
 (define-slot (screen update) ()
   (declare (connected timer (timeout)))
