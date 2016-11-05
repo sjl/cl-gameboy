@@ -490,10 +490,13 @@
       ;; OAM
       ((< address #xFF00) (error "Read OAM unimplemented ~4,'0X" address))
 
+      ;; I/O
+      ;; Joypad
+      ((= address #xFF00) 0) ; todo: keys
+
       ;; Interrupt Flags
       ((= address #xFF0F) (gb-interrupt-flags gameboy))
 
-      ;; I/O
       ((<= #xFF10 address #xFF3F) 0) ; todo: sound
       ((= address #xFF40) (gpu-control (gb-gpu gameboy)))
       ((= address #xFF41) (gpu-stat (gb-gpu gameboy)))
@@ -545,6 +548,10 @@
 
       ;; OAM
       ((< address #xFF00) (error "Write OAM unimplemented ~4,'0X" address))
+
+      ;; I/O
+      ;; Joypad
+      ((= address #xFF00) 0) ; todo: keys
 
       ;; Interrupt Flags
       ((= address #xFF0F) (setf (gb-interrupt-flags gameboy) value))
@@ -1545,7 +1552,7 @@
     ; (#x63 )
     ; (#x64 )
     ; (#x65 )
-    ; (#x66 )
+    (#x66 ld-r/h<mem/hl)
     (#x67 ld-r/h<r/a)
     (#x68 ld-r/l<r/b)
     (#x69 ld-r/l<r/c)
@@ -1607,13 +1614,13 @@
     (#x9E sbc-r/a<mem/hl)
     (#x9F sbc-r/a<r/a)
 
-    ; (#xA0 )
-    ; (#xA1 )
-    ; (#xA2 )
-    ; (#xA3 )
-    ; (#xA4 )
-    ; (#xA5 )
-    ; (#xA6 )
+    (#xA0 and-r/a<r/b)
+    (#xA1 and-r/a<r/c)
+    (#xA2 and-r/a<r/d)
+    (#xA3 and-r/a<r/e)
+    (#xA4 and-r/a<r/h)
+    (#xA5 and-r/a<r/l)
+    (#xA6 and-r/a<mem/hl)
     ; (#xA7 )
     ; (#xA8 )
     ; (#xA9 )
@@ -1624,14 +1631,14 @@
     ; (#xAE )
     (#xAF xor-r/a<r/a)
 
-    ; (#xB0 )
-    ; (#xB1 )
-    ; (#xB2 )
-    ; (#xB3 )
-    ; (#xB4 )
-    ; (#xB5 )
-    ; (#xB6 )
-    ; (#xB7 )
+    (#xB0 or-r/a<r/b)
+    (#xB1 or-r/a<r/c)
+    (#xB2 or-r/a<r/d)
+    (#xB3 or-r/a<r/e)
+    (#xB4 or-r/a<r/h)
+    (#xB5 or-r/a<r/l)
+    (#xB6 or-r/a<mem/hl)
+    (#xB7 or-r/a<r/a)
     (#xB8 cp-r/a=r/b)
     (#xB9 cp-r/a=r/c)
     (#xBA cp-r/a=r/d)
@@ -1641,7 +1648,7 @@
     (#xBE cp-r/a=mem/hl)
     (#xBF cp-r/a=r/a)
 
-    ; (#xC0 )
+    (#xC0 ret-nz)
     (#xC1 pop-r/bc)
     (#xC2 jp-nz-i)
     (#xC3 jp-i)
@@ -1658,7 +1665,7 @@
     ; (#xCE )
     (#xCF rst-08)
 
-    ; (#xD0 )
+    (#xD0 ret-nc)
     (#xD1 pop-r/de)
     ; (#xD2 )
     ; (#xD3 )
@@ -1683,7 +1690,7 @@
     (#xE5 push-r/hl)
     (#xE6 and-r/a<i)
     (#xE7 rst-20)
-    ; (#xE8 )
+    (#xE8 add-r/sp<i)
     ; (#xE9 )
     (#xEA ld-mem/i<r/a)
     ; (#xEB )
@@ -1765,8 +1772,8 @@
     (#x33 swap-r/e)
     (#x34 swap-r/h)
     (#x35 swap-r/l)
-    ; (#x36 )
-    ; (#x37 )
+    (#x36 swap-mem/hl)
+    (#x37 swap-r/a)
     ; (#x38 )
     ; (#x39 )
     ; (#x3A )
@@ -2057,7 +2064,7 @@
 
 (defun run (gameboy)
   (load-opcode-tables)
-  (load-rom gameboy "roms/opus1.gb")
+  (load-rom gameboy "roms/ttt.gb")
   (setf *running* t *gb* gameboy)
   (bt:make-thread
     (lambda ()
