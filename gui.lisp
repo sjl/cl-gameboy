@@ -36,20 +36,12 @@
 (define-subwidget (debugger pause-button)
   (q+:make-qpushbutton "Pause" debugger))
 
-(define-subwidget (debugger slow-button)
-  (q+:make-qpushbutton "Slow" debugger))
-
 (define-subwidget (debugger layout) (q+:make-qvboxlayout debugger)
-  (q+:add-widget layout slow-button)
   (q+:add-widget layout pause-button))
 
 (define-slot (debugger pause-pressed) ()
   (declare (connected pause-button (released)))
   (zapf gameboy::*paused* (not %)))
-
-(define-slot (debugger slow-pressed) ()
-  (declare (connected slow-button (released)))
-  (zapf gameboy::*slow* (not %)))
 
 
 ;;;; Init
@@ -97,13 +89,47 @@
 
 
 ;;;; Keyboard
+(defun key (code)
+  (cond
+    ((= code (q+:qt.key_z)) :a)
+    ((= code (q+:qt.key_x)) :b)
+    ((= code (q+:qt.key_q)) :start)
+    ((= code (q+:qt.key_w)) :select)
+    ((= code (q+:qt.key_left)) :left)
+    ((= code (q+:qt.key_right)) :right)
+    ((= code (q+:qt.key_up)) :up)
+    ((= code (q+:qt.key_down)) :down)))
+
+(define-override (screen key-press-event) (ev)
+  (let ((gui (screen-gui screen)))
+    (case (key (q+:key ev))
+      ((:a) (setf (qt-gui-key-a gui) t))
+      ((:b) (setf (qt-gui-key-b gui) t))
+      ((:start) (setf (qt-gui-key-start gui) t))
+      ((:select) (setf (qt-gui-key-select gui) t))
+      ((:left) (setf (qt-gui-key-left gui) t))
+      ((:right) (setf (qt-gui-key-right gui) t))
+      ((:up) (setf (qt-gui-key-up gui) t))
+      ((:down) (setf (qt-gui-key-down gui) t))))
+  (stop-overriding))
+
 (define-override (screen key-release-event) (ev)
-  (cond ((= (q+:key ev) (q+:qt.key_escape))
-         (die screen))
-        ((= (q+:key ev) (q+:qt.key_space))
-         (zapf gameboy::*paused* (not %)))
-        ((= (q+:key ev) (q+:qt.key_s))
-         (setf gameboy::*step* t)))
+  (let ((gui (screen-gui screen)))
+    (case (key (q+:key ev))
+      ((:a) (setf (qt-gui-key-a gui) nil))
+      ((:b) (setf (qt-gui-key-b gui) nil))
+      ((:start) (setf (qt-gui-key-start gui) nil))
+      ((:select) (setf (qt-gui-key-select gui) nil))
+      ((:left) (setf (qt-gui-key-left gui) nil))
+      ((:right) (setf (qt-gui-key-right gui) nil))
+      ((:up) (setf (qt-gui-key-up gui) nil))
+      ((:down) (setf (qt-gui-key-down gui) nil))
+      (t (cond ((= (q+:key ev) (q+:qt.key_escape))
+                (die screen))
+               ((= (q+:key ev) (q+:qt.key_space))
+                (zapf gameboy::*paused* (not %)))
+               ((= (q+:key ev) (q+:qt.key_s))
+                (setf gameboy::*step* t))))))
   (stop-overriding))
 
 
@@ -139,7 +165,7 @@
     (q+:end-native-painting painter)
 
     (let ((debug (qt-gui-debug (screen-gui screen))))
-      (when debug
+      (when (or debug gameboy::*paused*)
         (with-finalizing ((font (q+:make-qfont "Menlo" 40))
                           (border-color (q+:make-qcolor 255 255 255))
                           (fill-color (q+:make-qcolor 0 0 0))
@@ -167,7 +193,15 @@
 
 (defstruct (qt-gui (:constructor make-qt-gui%))
   (data (error "Required.") :type screen-data-array)
-  (debug nil))
+  (debug nil)
+  key-left
+  key-right
+  key-up
+  key-down
+  key-a
+  key-b
+  key-start
+  key-select)
 
 (defun make-qt-gui ()
   (let* ((data (make-array (* 144 160)
