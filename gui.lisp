@@ -18,7 +18,6 @@
 ;;;; Main Window
 (define-widget screen (QGLWidget)
   ((texture :accessor screen-texture)
-   (data :accessor screen-data :initarg :data)
    (gui :accessor screen-gui :initarg :gui)
    (debugger :accessor screen-debugger)))
 
@@ -79,10 +78,6 @@
 (define-slot (screen update) ()
   (declare (connected timer (timeout)))
 
-  ; (iterate (repeat 2)
-  ;          (setf (sref (screen-data screen) (random 160) (random 144))
-  ;                (random 256)))
-
   (if gameboy::*running*
     (q+:repaint screen)
     (die screen)))
@@ -91,8 +86,8 @@
 ;;;; Keyboard
 (defun key (code)
   (cond
-    ((= code (q+:qt.key_z)) :a)
-    ((= code (q+:qt.key_x)) :b)
+    ((= code (q+:qt.key_a)) :a)
+    ((= code (q+:qt.key_s)) :b)
     ((= code (q+:qt.key_q)) :start)
     ((= code (q+:qt.key_w)) :select)
     ((= code (q+:qt.key_left)) :left)
@@ -145,7 +140,7 @@
 
     (gl:bind-texture :texture-2d (screen-texture screen))
     (gl:tex-sub-image-2d :texture-2d 0 0 0 160 144 :luminance :unsigned-byte
-                         (screen-data screen))
+                         (qt-gui-data-screen (screen-gui screen)))
 
     (gl:with-primitives :quads
       (gl:tex-coord 0 0)
@@ -192,7 +187,8 @@
 (defparameter *current* nil)
 
 (defstruct (qt-gui (:constructor make-qt-gui%))
-  (data (error "Required.") :type screen-data-array)
+  (data-buffer (error "Required.") :type screen-data-array)
+  (data-screen (error "Required.") :type screen-data-array)
   (debug nil)
   key-left
   key-right
@@ -204,18 +200,20 @@
   key-select)
 
 (defun make-qt-gui ()
-  (let* ((data (make-array (* 144 160)
-                :element-type '(unsigned-byte 8)
-                :adjustable nil
-                :fill-pointer nil)))
-    (check-type data screen-data-array) ; make sure I didn't fuck up the deftype
-    (make-qt-gui% :data data)))
+  (let* ((data-buffer (make-array (* 144 160)
+                        :element-type '(unsigned-byte 8)
+                        :adjustable nil
+                        :fill-pointer nil))
+         (data-screen (make-array (* 144 160)
+                        :element-type '(unsigned-byte 8)
+                        :adjustable nil
+                        :fill-pointer nil)))
+    (make-qt-gui% :data-buffer data-buffer
+                  :data-screen data-screen)))
 
 (defun run-qt-gui (g)
   (with-main-window
-    (window (make-instance 'screen
-              :data (qt-gui-data g)
-              :gui g))))
+    (window (make-instance 'screen :gui g))))
 
 
 (defun blit-pixel (gui x y value)
@@ -224,17 +222,18 @@
            (type (integer 0 (160)) x)
            (type (integer 0 (144)) y)
            (type (integer 0 3) value))
-  (setf (sref (qt-gui-data gui) x y)
+  (setf (sref (qt-gui-data-buffer gui) x y)
         (case value
-          (0 180)
-          (1 120)
-          (2 60)
+          (0 255)
+          (1 180)
+          (2 90)
           (3 0)
           (t 255)))
   nil)
 
 (defun refresh-screen (gui)
-  (declare (ignore gui)))
+  (rotatef (qt-gui-data-screen gui)
+           (qt-gui-data-buffer gui)))
 
 (defun set-debug (gui object)
   (setf (qt-gui-debug gui) object))
