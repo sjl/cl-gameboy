@@ -1,3 +1,4 @@
 (1 case-bit)
 (1 macro-map)
 (2 define-opcode)
+(1 make-simple-array)

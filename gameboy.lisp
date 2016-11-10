@@ -3,7 +3,7 @@
 
 (setf *print-length* 10)
 (declaim (optimize (speed 1) (safety 3) (debug 3)))
-(declaim (optimize (speed 3) (safety 0) (debug 3)))
+; (declaim (optimize (speed 3) (safety 0) (debug 3)))
 ; (declaim (optimize (speed 3) (safety 0) (debug 0)))
 
 (defun :i () SB-EXT:*INSPECTED*)
@@ -19,6 +19,16 @@
 (deftype bit () 'cl:bit)
 (deftype opcode-function () '(function (gameboy) (values gameboy &optional)))
 (deftype color-index () '(integer 0 3))
+
+(deftype sprite-cache ()
+  `(simple-array ,(upgraded-array-element-type 'sprite) (40)))
+
+(deftype tile-cache ()
+  '(simple-array (integer 0 3) #.(list (* 3 128) 8 8)))
+
+(deftype gpu-screen-data ()
+  `(array ,(upgraded-array-element-type 'color-index) (160 144)))
+
 
 (defparameter *bios*
   '(#x31 #xFE #xFF #xAF #x21 #xFF #x9F #x32 #xCB #x7C #x20 #xFB #x21 #x26 #xFF #x0E
@@ -80,6 +90,10 @@
          (collect (if (eq bit t)
                     `(t ,@body)
                     `((logbitp ,bit ,expr) ,@body)))))))
+
+(defmacro n-of (n expr)
+  `(iterate (repeat ,n)
+            (collect ,expr)))
 
 
 ;;;; Bit Fuckery --------------------------------------------------------------
@@ -240,6 +254,18 @@
 
 
 ;;;; Data ---------------------------------------------------------------------
+(defstruct sprite
+  (raw (make-simple-array 4 :element-type 'int8)
+       :type (simple-array int8 (4))
+       :read-only t)
+  (x -8 :type sint8)
+  (y -16 :type sint8)
+  (tile 0 :type int8)
+  (palette 0 :type bit)
+  (priority nil :type boolean)
+  (x-flip nil :type boolean)
+  (y-flip nil :type boolean))
+
 (defstruct mmu
   (in-bios t :type boolean)
   (bios (make-bios) :type memory-array :read-only t)
@@ -252,9 +278,16 @@
 
 (defstruct gpu
   (gui (gameboy.gui::make-qt-gui))
+  (screen-data (make-array '(160 144)
+                 :element-type 'color-index
+                 :fill-pointer nil
+                 :adjustable nil)
+               :type gpu-screen-data
+               :read-only t)
   (vram (make-mem (k 8)) :type memory-array :read-only t)
   (io (make-mem 256) :type memory-array :read-only t)
   (tile-cache (make-tile-cache) :type tile-cache :read-only t)
+  (sprite-cache (make-sprite-cache) :type sprite-cache :read-only t)
   (mode 2 :type (integer 0 3))
   (clock 0 :type fixnum) ; fuck it, close enough
   (line 0 :type (integer 0 154))
@@ -310,11 +343,14 @@
         value))))
 
 
+(define-with-macro (sprite)
+  x y tile palette priority x-flip y-flip raw)
+
 (define-with-macro (mmu)
   in-bios bios rom banks working-ram external-ram zero-page-ram)
 
 (define-with-macro (gpu)
-  gui vram tile-cache
+  gui vram tile-cache sprite-cache screen-data
   mode clock line line-compare
   scroll-x scroll-y
   palette-background palette-object-1 palette-object-2
@@ -522,6 +558,7 @@
       ((< address #xFE00) (aref working-ram (- address #xE000)))
 
       ;; OAM
+      ((< address #xFEA0) (read-sprite-data gameboy (- address #xFE00)))
       ((< address #xFF00) (error "Read OAM unimplemented ~4,'0X" address))
 
       ;; I/O
@@ -581,6 +618,7 @@
       ((< address #xFE00) (setf (aref working-ram (- address #xE000)) value))
 
       ;; OAM
+      ((< address #xFEA0) (write-sprite-data gameboy (- address #xFE00) value))
       ((< address #xFF00) (error "Write OAM unimplemented ~4,'0X" address))
 
       ;; I/O
@@ -654,8 +692,32 @@
   (ldb (byte 2 (* 2 data)) palette))
 
 
-(deftype tile-cache ()
-  '(simple-array (integer 0 3) #.(list (* 3 128) 8 8)))
+(defun make-sprite-cache ()
+  (make-simple-array 40
+    :element-type 'sprite
+    :initial-contents (n-of 40 (make-sprite))))
+
+(defun update-sprite (sprite)
+  (with-sprite (sprite)
+    (setf y (aref raw 0)
+          x (aref raw 1)
+          tile (aref raw 2)
+          palette (bit 4 (aref raw 3))
+          x-flip (nonzerop (bit 5 (aref raw 3)))
+          y-flip (nonzerop (bit 6 (aref raw 3)))
+          priority (nonzerop (bit 7 (aref raw 3))))))
+
+(defun read-sprite-data (gameboy sprite-address)
+  (with-gpu ((gb-gpu gameboy))
+    (let ((sprite (aref sprite-cache (floor sprite-address 4))))
+      (aref (sprite-raw sprite) (mod sprite-address 4)))))
+
+(defun write-sprite-data (gameboy sprite-address value)
+  (with-gpu ((gb-gpu gameboy))
+    (let ((sprite (aref sprite-cache (floor sprite-address 4))))
+      (setf (aref (sprite-raw sprite) (mod sprite-address 4)) value)
+      (update-sprite sprite))))
+
 
 (defun tile-pixel (tile-cache tile-id row col)
   (aref tile-cache tile-id row col))
@@ -664,10 +726,8 @@
   (setf (aref tile-cache tile-id row col) value))
 
 (defun make-tile-cache ()
-  (make-array (list (* 3 128) 8 8)
-    :element-type '(integer 0 3)
-    :adjustable nil
-    :fill-pointer nil))
+  (make-simple-array (list (* 3 128) 8 8)
+    :element-type '(integer 0 3)))
 
 (defun update-tile-cache (tile-cache tile-id row low-byte high-byte)
   (iterate
@@ -720,58 +780,123 @@
          2 1)))
 
 
-(defun render-background-scanline (gameboy draw)
+(declaim (inline get-pixel render-pixel)
+         (ftype (function (gpu (integer 0 (160)) (integer 0 (144)) color-index))
+                render-pixel)
+         (ftype (function (gpu (integer 0 (160)) (integer 0 (144))) color-index)
+                get-pixel)
+         (ftype (function (gameboy)) clear-scanline))
+
+(defun render-pixel (gpu x y final-color)
+  (setf (aref (gpu-screen-data gpu) x y) final-color)
+  (gameboy.gui::blit-pixel (gpu-gui gpu) x y final-color))
+
+(defun get-pixel (gpu x y)
+  (aref (gpu-screen-data gpu) x y))
+
+
+(defun clear-scanline (gameboy)
   (let ((gpu (gb-gpu gameboy)))
     (with-gpu (gpu)
-      (let ((background-map-offset
-              ;; The background map is stored in a hunk of VRAM.  Each element
-              ;; is a single byte (the tile ID).
-              ;;
-              ;; 0,0 0,1 0,2 0,3 0,4 ... 0,32
-              ;; 1,0 1,1 1,2 1,3 1,4 ... 1,32
-              (+ (if (zerop flag-background-tile-map)
-                   #x1800
-                   #x1c00)
-                 (-<> scroll-y  ; start at the scroll offset
-                   (+ line <>)  ; add the current line
-                   (chop-8 <>)  ;         with an 8-bit add
-                   (floor <> 8) ; each tile is 8 rows tall
-                   (* 32 <>)))) ; 32 tiles per row 
-            (pal palette-background))
-        (labels ((tile-id (byte)
-                   (if (nonzerop flag-background-tile-set)
-                     ; tileset 1 is signed
-                     byte
-                     ; tileset 0 is just normal
-                     (+ 256 (unsigned-to-signed-8 byte))))
-                 (background-map-ref (x)
-                   ;; Take a screen X coordinate and retrieve the tile id from the
-                   ;; appropriate background map.
-                   (-<> background-map-offset
-                     (+ <> (floor (+ scroll-x x) 8))
-                     (aref vram <>)
-                     (tile-id <>))))
-          (iterate
-            (with g = gui)
-            (with y = line)
-            (with cache = tile-cache)
-            (with tile-row = (mod (+ y scroll-y) 8))
-            (with sx = scroll-x)
+      (iterate
+        (with y = line)
+        (for x :from 0 :below 160)
+        (render-pixel gpu x y 0)))))
 
-            (for x :from 0 :below 160)
-            (for full-x = (+ x sx))
-            (for color = (if draw
-                           (tile-pixel cache (background-map-ref x)
-                                       tile-row (mod full-x 8))
-                           0))
-            (gameboy.gui::blit-pixel g x y (apply-palette pal color))))))))
+
+(defun render-background-scanline (gameboy)
+  (with-gpu ((gb-gpu gameboy))
+    (let ((background-map-offset
+            ;; The background map is stored in a hunk of VRAM.  Each element
+            ;; is a single byte (the tile ID).
+            ;;
+            ;; 0,0 0,1 0,2 0,3 0,4 ... 0,32
+            ;; 1,0 1,1 1,2 1,3 1,4 ... 1,32
+            (+ (if (zerop flag-background-tile-map)
+                 #x1800
+                 #x1c00)
+               (-<> scroll-y  ; start at the scroll offset
+                 (+ line <>)  ; add the current line
+                 (chop-8 <>)  ;         with an 8-bit add
+                 (floor <> 8) ; each tile is 8 rows tall
+                 (* 32 <>)))) ; 32 tiles per row
+          (pal palette-background))
+      (labels ((tile-id (byte)
+                 (if (nonzerop flag-background-tile-set)
+                   ; tileset 1 is signed
+                   byte
+                   ; tileset 0 is just normal
+                   (+ 256 (unsigned-to-signed-8 byte))))
+               (background-map-ref (x)
+                 ;; Take a screen X coordinate and retrieve the tile id from the
+                 ;; appropriate background map.
+                 (-<> background-map-offset
+                   (+ <> (floor (+ scroll-x x) 8))
+                   (aref vram <>)
+                   (tile-id <>))))
+        (iterate
+          (with g = gui)
+          (with y = line)
+          (with cache = tile-cache)
+          (with tile-row = (mod (+ y scroll-y) 8))
+          (with sx = scroll-x)
+
+          (for x :from 0 :below 160)
+          (for full-x = (+ x sx))
+          (for color = (tile-pixel cache (background-map-ref x)
+                                   tile-row (mod full-x 8)))
+          (gameboy.gui::blit-pixel g x y (apply-palette pal color)))))))
+
+
+(defun sprite-on-scanline-p (sprite line)
+  (with-sprite (sprite)
+    (<= y line (+ y 7))))
+
+(defun render-sprite-scanline (gameboy sprite)
+  (let ((gpu (gb-gpu gameboy)))
+    (with-gpu (gpu)
+      (when (sprite-on-scanline-p sprite line)
+        (iterate
+          (with screen-y = line)
+          (with pal = (if (zerop (sprite-palette sprite))
+                        palette-object-1
+                        palette-object-2))
+          (with sprite-row = (- screen-y (sprite-y sprite)))
+          (with tile-row = (if (sprite-y-flip sprite)
+                             (- 7 sprite-row)
+                             sprite-row))
+
+          (for x-offset :from 0 :below 8)
+          (for screen-x = (+ (sprite-x sprite) x-offset))
+          (for tile-col = (if (sprite-x-flip sprite)
+                            (- 7 x-offset)
+                            x-offset))
+          (for background-pixel = (get-pixel gpu screen-x screen-y))
+          (for sprite-pixel = (tile-pixel tile-cache (sprite-tile sprite)
+                                          tile-row tile-col))
+          (when (and (<= 0 screen-x 159)
+                     (nonzerop sprite-pixel)
+                     (or (zerop background-pixel)
+                         (sprite-priority sprite)))
+            (render-pixel gpu screen-x screen-y
+                          (apply-palette pal sprite-pixel))))))))
+
+
+(defun render-sprites-scanline (gameboy)
+  (with-gpu ((gb-gpu gameboy))
+    (iterate (for sprite-index :below 40)
+             (for sprite = (aref sprite-cache sprite-index))
+             (render-sprite-scanline gameboy sprite))))
+
 
 (defun scanline (gameboy)
   (with-gpu ((gb-gpu gameboy))
     (gameboy.gui::set-debug gui `())
-    (when flag-display
-      (render-background-scanline gameboy (nonzerop flag-background))))
+    (clear-scanline gameboy)
+    (when flag-display (render-background-scanline gameboy))
+    (when flag-sprites (render-sprites-scanline gameboy)))
   nil)
+
 
 (defun step-gpu (gameboy cycles)
   "Step the GPU.
@@ -1682,7 +1807,7 @@
     (#xA5 and-r/a<r/l)
     (#xA6 and-r/a<mem/hl)
     ; (#xA7 )
-    ; (#xA8 )
+    (#xA8 xor-r/a<r/b)
     ; (#xA9 )
     ; (#xAA )
     ; (#xAB )
@@ -1716,9 +1841,9 @@
     (#xC5 push-r/bc)
     ; (#xC6 )
     (#xC7 rst-00)
-    ; (#xC8 )
+    (#xC8 ret-z)
     (#xC9 ret)
-    ; (#xCA )
+    (#xCA jp-z-i)
     (#xCB extended)
     ; (#xCC )
     (#xCD call-i)
@@ -1729,11 +1854,11 @@
     (#xD1 pop-r/de)
     ; (#xD2 )
     ; (#xD3 )
-    ; (#xD4 )
+    (#xD4 call-nc-i)
     (#xD5 push-r/de)
     ; (#xD6 )
     (#xD7 rst-10)
-    ; (#xD8 )
+    (#xD8 ret-c)
     (#xD9 reti)
     ; (#xDA )
     ; (#xDB )
@@ -1800,16 +1925,16 @@
     (#x13 rl-r/e)
     (#x14 rl-r/h)
     (#x15 rl-r/l)
-    ; (#x16 )
-    ; (#x17 )
-    ; (#x18 )
-    ; (#x19 )
-    ; (#x1A )
-    ; (#x1B )
-    ; (#x1C )
-    ; (#x1D )
-    ; (#x1E )
-    ; (#x1F )
+    (#x16 rl-mem/hl)
+    (#x17 rl-r/a)
+    (#x18 rr-r/b)
+    (#x19 rr-r/c)
+    (#x1A rr-r/d)
+    (#x1B rr-r/e)
+    (#x1C rr-r/h)
+    (#x1D rr-r/l)
+    (#x1E rr-mem/hl)
+    (#x1F rr-r/a)
     (#x20 sla-r/b)
     (#x21 sla-r/c)
     (#x22 sla-r/d)
@@ -2124,7 +2249,7 @@
 
 (defun run (gameboy)
   (load-opcode-tables)
-  (load-rom gameboy "roms/opus1.gb")
+  (load-rom gameboy "roms/opus2.gb")
   (setf *running* t *gb* gameboy)
   (bt:make-thread
     (lambda ()
