@@ -18,6 +18,7 @@
 (deftype bank-array () '(simple-vector *))
 (deftype bit () 'cl:bit)
 (deftype opcode-function () '(function (gameboy) (values gameboy &optional)))
+(deftype color-index () '(integer 0 3))
 
 (defparameter *bios*
   '(#x31 #xFE #xFF #xAF #x21 #xFF #x9F #x32 #xCB #x7C #x20 #xFB #x21 #x26 #xFF #x0E
@@ -260,9 +261,9 @@
   (line-compare 0 :type int8)
   (scroll-x 0 :type int8)
   (scroll-y 0 :type int8)
-  (palette-background 0 :type int8)
-  (palette-object-1 0 :type int8)
-  (palette-object-2 0 :type int8)
+  (palette-background #xFF :type int8)
+  (palette-object-1 #xFF :type int8)
+  (palette-object-2 #xFF :type int8)
   (control 0 :type int8))
 
 (defstruct (gameboy (:conc-name gb-))
@@ -638,10 +639,19 @@
 
 
 ;;;; Graphics -----------------------------------------------------------------
-(defun palette-map (gameboy color)
-  ; todo
-  (declare (ignore gameboy))
-  color)
+(declaim (inline apply-palette)
+         (ftype (function (int8 color-index) color-index) apply-palette))
+
+
+(defun apply-palette (palette data)
+  ;; Palette data is stored in a byte like so:
+  ;;
+  ;;   33 22 11 00 color data
+  ;;   76 54 32 10 bit index
+  ;;
+  ;; e.g. when the data requests color 3, whatever is in the two high-order bits
+  ;; is the actual color that gets rendered.
+  (ldb (byte 2 (* 2 data)) palette))
 
 
 (deftype tile-cache ()
@@ -726,7 +736,8 @@
                    (+ line <>)  ; add the current line
                    (chop-8 <>)  ;         with an 8-bit add
                    (floor <> 8) ; each tile is 8 rows tall
-                   (* 32 <>))))) ; 32 tiles per row
+                   (* 32 <>)))) ; 32 tiles per row 
+            (pal palette-background))
         (labels ((tile-id (byte)
                    (if (nonzerop flag-background-tile-set)
                      ; tileset 1 is signed
@@ -753,7 +764,7 @@
                            (tile-pixel cache (background-map-ref x)
                                        tile-row (mod full-x 8))
                            0))
-            (gameboy.gui::blit-pixel g x y (palette-map gameboy color))))))))
+            (gameboy.gui::blit-pixel g x y (apply-palette pal color))))))))
 
 (defun scanline (gameboy)
   (with-gpu ((gb-gpu gameboy))
