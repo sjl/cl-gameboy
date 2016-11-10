@@ -584,7 +584,8 @@
       ((= address #xFF47) (gpu-palette-background (gb-gpu gameboy)))
       ((= address #xFF48) (gpu-palette-object-1 (gb-gpu gameboy)))
       ((= address #xFF49) (gpu-palette-object-2 (gb-gpu gameboy)))
-      ((or (= address #xFF50)) ; todo ???
+      ((or (= address #xFF50) ; todo ???
+           (= address #xFF7F)) ; todo ???
        (aref (gpu-io (gb-gpu gameboy)) (- address #xFF00)))
       ((< address #xFF80) (error "Read I/O unimplemented ~4,'0X" address))
 
@@ -626,11 +627,14 @@
       ;; OAM
       ((< address #xFEA0) (write-sprite-data gameboy (- address #xFE00) value))
       ;; No fuckin' clue what's supposed to happen to you write to these bytes...
-      ((< address #xFF00) (error "Write OAM unimplemented ~4,'0X" address))
+      ; ((< address #xFF00) (error "Write OAM unimplemented ~4,'0X" address))
+      ((< address #xFF00) nil)
 
       ;; I/O
       ;; Joypad
       ((= address #xFF00) (write-keys gameboy value))
+      ((= address #xFF01) (write-serial gameboy value))
+      ((= address #xFF02) (write-serial-control gameboy value))
 
       ;; Interrupt Flags
       ((= address #xFF0F) (setf (gb-interrupt-flags gameboy) value))
@@ -651,7 +655,8 @@
                                       (- address #xFF00))
                                 value))
       ((or (= address #xFF41) ; todo STAT??
-           (= address #xFF50)) ; todo ???
+           (= address #xFF50) ; todo ???
+           (= address #xFF7F)) ; todo ???
        (setf (aref (gpu-io (gb-gpu gameboy)) (- address #xFF00))
              value))
       ((< address #xFF80) (error "Write I/O unimplemented ~4,'0X" address))
@@ -953,6 +958,13 @@
            (for dest :from #xFE00)
            (setf (mem-8 gameboy dest)
                  (mem-8 gameboy source))))
+
+;;;; Serial -------------------------------------------------------------------
+(defun write-serial (gameboy value)
+  (declare (ignore gameboy value)))
+
+(defun write-serial-control (gameboy value)
+  (declare (ignore gameboy value)))
 
 
 ;;;; Opcodes ------------------------------------------------------------------
@@ -2271,7 +2283,7 @@
 
 (defun run (gameboy)
   (load-opcode-tables)
-  (load-rom gameboy "roms/opus5.gb")
+  (load-rom gameboy "roms/ttt.gb")
   (setf *running* t *gb* gameboy)
   (bt:make-thread
     (lambda ()
@@ -2305,7 +2317,9 @@
   (->> gameboy gb-gpu gpu-gui gameboy.gui::run-qt-gui))
 
 (defun start ()
-  (run (make-gameboy)))
+  (let ((gb (make-gameboy)))
+    (setf (gameboy.gui::qt-gui-gameboy (gpu-gui (gb-gpu gb))) gb)
+    (run gb)))
 
 
 ;;;; TODO ---------------------------------------------------------------------

@@ -190,6 +190,7 @@
   (data-buffer (error "Required.") :type screen-data-array)
   (data-screen (error "Required.") :type screen-data-array)
   (debug nil)
+  gameboy
   key-left
   key-right
   key-up
