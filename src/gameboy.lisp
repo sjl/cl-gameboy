@@ -287,6 +287,7 @@
   (vram (make-mem (k 8)) :type memory-array :read-only t)
   (io (make-mem 256) :type memory-array :read-only t)
   (tile-cache (make-tile-cache) :type tile-cache :read-only t)
+  (tile-cache-timestamp -1)
   (sprite-cache (make-sprite-cache) :type sprite-cache :read-only t)
   (mode 2 :type (integer 0 3))
   (clock 0 :type fixnum) ; fuck it, close enough
@@ -351,6 +352,7 @@
 
 (define-with-macro (gpu)
   gui vram tile-cache sprite-cache screen-data
+  tile-cache-timestamp
   mode clock line line-compare
   scroll-x scroll-y
   palette-background palette-object-1 palette-object-2
@@ -768,7 +770,8 @@
     (with-gpu ((gb-gpu gameboy))
       (update-tile-cache tile-cache tile-id tile-row
                          (aref vram (set-bit 0 offset 1))
-                         (aref vram (set-bit 0 offset 0))))))
+                         (aref vram (set-bit 0 offset 0)))
+      (setf tile-cache-timestamp (get-internal-real-time)))))
 
 
 (defun dump-tile (gameboy id)
@@ -2318,7 +2321,7 @@
 
 (defun start ()
   (let ((gb (make-gameboy)))
-    (setf (gameboy.gui::qt-gui-gameboy (gpu-gui (gb-gpu gb))) gb)
+    (gameboy.gui::init-gui (gpu-gui (gb-gpu gb)) gb)
     (run gb)))
 
 

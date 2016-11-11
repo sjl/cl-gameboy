@@ -22,5 +22,7 @@
                 :components ((:file "quickutils-package")
                              (:file "quickutils")))
                (:file "package")
-               (:file "gui")
-               (:file "gameboy")))
+               (:module "src" :serial t
+                :components ((:module "gui" :serial t
+                              :components ((:file "gui")))
+                             (:file "gameboy")))))

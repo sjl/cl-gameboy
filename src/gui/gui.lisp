@@ -15,35 +15,8 @@
   `(aref ,arr (+ (* 160 ,y) ,x)))
 
 
-;;;; Main Window
-(define-widget screen (QGLWidget)
-  ((texture :accessor screen-texture)
-   (gui :accessor screen-gui :initarg :gui)
-   (debugger :accessor screen-debugger)))
 
-(defun die (screen)
-  (setf gameboy::*running* nil)
-  (when (slot-boundp screen 'debugger)
-    (q+:close (screen-debugger screen)))
-  (q+:close screen))
-
-
-;;;; Debug Window
-(define-widget debugger (QDialog)
-  ())
-
-(define-subwidget (debugger pause-button)
-  (q+:make-qpushbutton "Pause" debugger))
-
-(define-subwidget (debugger layout) (q+:make-qvboxlayout debugger)
-  (q+:add-widget layout pause-button))
-
-(define-slot (debugger pause-pressed) ()
-  (declare (connected pause-button (released)))
-  (zapf gameboy::*paused* (not %)))
-
-
-;;;; Init
+;;;; OpenGL -------------------------------------------------------------------
 (defun initialize-texture (size)
   (let* ((handle (gl:gen-texture)))
     (gl:bind-texture :texture-2d handle)
@@ -58,19 +31,88 @@
 
     handle))
 
+
+;;;; Tile Viewer --------------------------------------------------------------
+(define-widget tile-viewer (QGLWidget)
+  ((texture :accessor tv-texture)
+   (timestamp :accessor tv-timestamp :initform -1)
+   (gameboy :accessor tv-gameboy)))
+
+(define-initializer (tile-viewer tv-setup)
+  (setf (q+:window-title tile-viewer) "Tile Data")
+  (setf (q+:fixed-size tile-viewer) (values *width* *height*)))
+
+(define-override (tile-viewer "initializeGL") ()
+  (setf (tv-texture tile-viewer) (initialize-texture 256))
+  (stop-overriding))
+
+(define-subwidget (tile-viewer tv-timer) (q+:make-qtimer tile-viewer)
+  (setf (q+:single-shot tv-timer) NIL)
+  (q+:start tv-timer (round 1000/1)))
+
+(define-slot (tile-viewer update) ()
+  (declare (connected tv-timer (timeout)))
+
+  (if gameboy::*running*
+    (q+:repaint tile-viewer)
+    (die tile-viewer)))
+
+(define-override (tile-viewer paint-event) (ev)
+  (declare (ignore ev))
+
+  (with-finalizing ((painter (q+:make-qpainter tile-viewer)))
+    (q+:begin-native-painting painter)
+
+    (gl:clear-color 0.0 0.0 0.0 1.0)
+    (gl:clear :color-buffer-bit)
+
+    (gl:bind-texture :texture-2d (tv-texture tile-viewer))
+    ; (gl:tex-sub-image-2d :texture-2d 0 0 0 160 144 :luminance :unsigned-byte
+    ;                      (qt-gui-data-screen (screen-gui screen)))
+
+    (gl:with-primitives :quads
+      (gl:tex-coord 0 0)
+      (gl:vertex 0 0)
+
+      (gl:tex-coord (/ 160 256) 0)
+      (gl:vertex *width* 0)
+
+      (gl:tex-coord (/ 160 256) (/ 144 256))
+      (gl:vertex *width* *height*)
+
+      (gl:tex-coord 0 (/ 144 256))
+      (gl:vertex 0 *height*))
+
+    (gl:bind-texture :texture-2d 0)
+
+    (q+:end-native-painting painter)))
+
+
+;;;; Main Window --------------------------------------------------------------
+(define-widget screen (QGLWidget)
+  ((texture :accessor screen-texture)
+   (gui :accessor screen-gui :initarg :gui)
+   (gameboy :accessor screen-gameboy)
+   (tile-viewer :accessor screen-tile-viewer)))
+
+(defun die (screen)
+  (setf gameboy::*running* nil)
+  (when (slot-boundp screen 'tile-viewer)
+    (q+:close (screen-tile-viewer screen)))
+  (q+:close screen))
+
 (define-initializer (screen setup)
   (setf (q+:window-title screen) "cl-gameboy")
   (setf (q+:fixed-size screen) (values *width* *height*))
 
-  (setf (screen-debugger screen) (make-instance 'debugger))
-  (q+:show (screen-debugger screen)))
+  (setf (screen-tile-viewer screen) (make-instance 'tile-viewer))
+  (q+:show (screen-tile-viewer screen)))
 
 (define-override (screen "initializeGL") ()
   (setf (screen-texture screen) (initialize-texture 256))
   (stop-overriding))
 
 
-;;;; Timer
 (define-subwidget (screen timer) (q+:make-qtimer screen)
   (setf (q+:single-shot timer) NIL)
   (q+:start timer (round 1000/60)))
@@ -83,52 +125,6 @@
     (die screen)))
 
 
-;;;; Keyboard
-(defun key (code)
-  (cond
-    ((= code (q+:qt.key_a)) :a)
-    ((= code (q+:qt.key_s)) :b)
-    ((= code (q+:qt.key_q)) :start)
-    ((= code (q+:qt.key_w)) :select)
-    ((= code (q+:qt.key_left)) :left)
-    ((= code (q+:qt.key_right)) :right)
-    ((= code (q+:qt.key_up)) :up)
-    ((= code (q+:qt.key_down)) :down)))
-
-(define-override (screen key-press-event) (ev)
-  (let ((gui (screen-gui screen)))
-    (case (key (q+:key ev))
-      ((:a) (setf (qt-gui-key-a gui) t))
-      ((:b) (setf (qt-gui-key-b gui) t))
-      ((:start) (setf (qt-gui-key-start gui) t))
-      ((:select) (setf (qt-gui-key-select gui) t))
-      ((:left) (setf (qt-gui-key-left gui) t))
-      ((:right) (setf (qt-gui-key-right gui) t))
-      ((:up) (setf (qt-gui-key-up gui) t))
-      ((:down) (setf (qt-gui-key-down gui) t))))
-  (stop-overriding))
-
-(define-override (screen key-release-event) (ev)
-  (let ((gui (screen-gui screen)))
-    (case (key (q+:key ev))
-      ((:a) (setf (qt-gui-key-a gui) nil))
-      ((:b) (setf (qt-gui-key-b gui) nil))
-      ((:start) (setf (qt-gui-key-start gui) nil))
-      ((:select) (setf (qt-gui-key-select gui) nil))
-      ((:left) (setf (qt-gui-key-left gui) nil))
-      ((:right) (setf (qt-gui-key-right gui) nil))
-      ((:up) (setf (qt-gui-key-up gui) nil))
-      ((:down) (setf (qt-gui-key-down gui) nil))
-      (t (cond ((= (q+:key ev) (q+:qt.key_escape))
-                (die screen))
-               ((= (q+:key ev) (q+:qt.key_space))
-                (zapf gameboy::*paused* (not %)))
-               ((= (q+:key ev) (q+:qt.key_s))
-                (setf gameboy::*step* t))))))
-  (stop-overriding))
-
-
-;;;; Redraw
 (define-override (screen paint-event) (ev)
   (declare (ignore ev))
 
@@ -183,7 +179,53 @@
             (q+:draw-path painter path)))))))
 
 
-;;;; Main
+;;;; Keyboard -----------------------------------------------------------------
+(defun key (code)
+  (cond
+    ((= code (q+:qt.key_a)) :a)
+    ((= code (q+:qt.key_s)) :b)
+    ((= code (q+:qt.key_q)) :start)
+    ((= code (q+:qt.key_w)) :select)
+    ((= code (q+:qt.key_left)) :left)
+    ((= code (q+:qt.key_right)) :right)
+    ((= code (q+:qt.key_up)) :up)
+    ((= code (q+:qt.key_down)) :down)))
+
+
+(define-override (screen key-press-event) (ev)
+  (let ((gui (screen-gui screen)))
+    (case (key (q+:key ev))
+      ((:a) (setf (qt-gui-key-a gui) t))
+      ((:b) (setf (qt-gui-key-b gui) t))
+      ((:start) (setf (qt-gui-key-start gui) t))
+      ((:select) (setf (qt-gui-key-select gui) t))
+      ((:left) (setf (qt-gui-key-left gui) t))
+      ((:right) (setf (qt-gui-key-right gui) t))
+      ((:up) (setf (qt-gui-key-up gui) t))
+      ((:down) (setf (qt-gui-key-down gui) t))))
+  (stop-overriding))
+
+(define-override (screen key-release-event) (ev)
+  (let ((gui (screen-gui screen)))
+    (case (key (q+:key ev))
+      ((:a) (setf (qt-gui-key-a gui) nil))
+      ((:b) (setf (qt-gui-key-b gui) nil))
+      ((:start) (setf (qt-gui-key-start gui) nil))
+      ((:select) (setf (qt-gui-key-select gui) nil))
+      ((:left) (setf (qt-gui-key-left gui) nil))
+      ((:right) (setf (qt-gui-key-right gui) nil))
+      ((:up) (setf (qt-gui-key-up gui) nil))
+      ((:down) (setf (qt-gui-key-down gui) nil))
+      (t (cond ((= (q+:key ev) (q+:qt.key_escape))
+                (die screen))
+               ((= (q+:key ev) (q+:qt.key_space))
+                (zapf gameboy::*paused* (not %)))
+               ((= (q+:key ev) (q+:qt.key_s))
+                (setf gameboy::*step* t))))))
+  (stop-overriding))
+
+
+;;;; Main ---------------------------------------------------------------------
 (defparameter *current* nil)
 
 (defstruct (qt-gui (:constructor make-qt-gui%))
