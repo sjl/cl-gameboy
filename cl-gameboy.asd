@@ -24,5 +24,8 @@
                (:file "package")
                (:module "src" :serial t
                 :components ((:module "gui" :serial t
-                              :components ((:file "gui")))
+                              :components ((:file "utils")
+                                           (:file "tile-viewer")
+                                           (:file "screen")
+                                           (:file "main")))
                              (:file "gameboy")))))

@@ -14,6 +14,7 @@
                :once-only
                :rcurry
                :read-file-into-byte-vector
+               :removef
                :symb
                :with-gensyms
                :write-byte-vector-into-file

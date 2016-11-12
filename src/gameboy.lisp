@@ -1,7 +1,6 @@
 (in-package :gameboy)
 
-
-(setf *print-length* 10)
+(setf *print-length* 4)
 (declaim (optimize (speed 1) (safety 3) (debug 3)))
 ; (declaim (optimize (speed 3) (safety 0) (debug 3)))
 ; (declaim (optimize (speed 3) (safety 0) (debug 0)))
@@ -277,13 +276,13 @@
   (zero-page-ram (make-mem 128) :type memory-array :read-only t))
 
 (defstruct gpu
-  (gui (gameboy.gui::make-qt-gui))
   (screen-data (make-array '(160 144)
                  :element-type 'color-index
                  :fill-pointer nil
                  :adjustable nil)
                :type gpu-screen-data
                :read-only t)
+  (timestamp 0 :type fixnum)
   (vram (make-mem (k 8)) :type memory-array :read-only t)
   (io (make-mem 256) :type memory-array :read-only t)
   (tile-cache (make-tile-cache) :type tile-cache :read-only t)
@@ -301,6 +300,7 @@
   (control 0 :type int8))
 
 (defstruct (gameboy (:conc-name gb-))
+  (gui (gameboy.gui::make-gui))
   (tick 0 :type fixnum)
   (clock 0 :type fixnum)
   (clock-increment 0 :type int8)
@@ -351,7 +351,8 @@
   in-bios bios rom banks working-ram external-ram zero-page-ram)
 
 (define-with-macro (gpu)
-  gui vram tile-cache sprite-cache screen-data
+  vram tile-cache sprite-cache screen-data
+  timestamp
   tile-cache-timestamp
   mode clock line line-compare
   scroll-x scroll-y
@@ -372,7 +373,8 @@
   interrupt-master interrupt-enable interrupt-flags
   key-column
   tick clock clock-increment af bc de hl halt
-  flag-zero flag-subtract flag-half-carry flag-carry)
+  flag-zero flag-subtract flag-half-carry flag-carry
+  gui)
 
 
 (defmethod print-object ((object gameboy) stream)
@@ -512,19 +514,19 @@
 
 (defun read-keys (gameboy)
   (with-gameboy (gameboy)
-    (let ((gui (gpu-gui (gb-gpu gameboy))))
+    (let ((keys (gameboy.gui::keys-down gui)))
       (case key-column
         (0 #x00)
         (2 (-<> 0
-             (set-bit 0 <> (to-bit (not (gameboy.gui::qt-gui-key-a gui))))
-             (set-bit 1 <> (to-bit (not (gameboy.gui::qt-gui-key-b gui))))
-             (set-bit 2 <> (to-bit (not (gameboy.gui::qt-gui-key-select gui))))
-             (set-bit 3 <> (to-bit (not (gameboy.gui::qt-gui-key-start gui))))))
+             (set-bit 0 <> (to-bit (not (member :a keys))))
+             (set-bit 1 <> (to-bit (not (member :b keys))))
+             (set-bit 2 <> (to-bit (not (member :select keys))))
+             (set-bit 3 <> (to-bit (not (member :start keys))))))
         (1 (-<> 0
-             (set-bit 0 <> (to-bit (not (gameboy.gui::qt-gui-key-right gui))))
-             (set-bit 1 <> (to-bit (not (gameboy.gui::qt-gui-key-left gui))))
-             (set-bit 2 <> (to-bit (not (gameboy.gui::qt-gui-key-up gui))))
-             (set-bit 3 <> (to-bit (not (gameboy.gui::qt-gui-key-down gui))))))
+             (set-bit 0 <> (to-bit (not (member :right keys))))
+             (set-bit 1 <> (to-bit (not (member :left keys))))
+             (set-bit 2 <> (to-bit (not (member :up keys))))
+             (set-bit 3 <> (to-bit (not (member :down keys))))))
         (t #xff)))))
 
 (defun write-keys (gameboy value)
@@ -796,28 +798,27 @@
          2 1)))
 
 
-(declaim (inline get-pixel render-pixel)
-         (ftype (function (gpu (integer 0 (160)) (integer 0 (144)) color-index))
-                render-pixel)
-         (ftype (function (gpu (integer 0 (160)) (integer 0 (144))) color-index)
-                get-pixel)
-         (ftype (function (gameboy)) clear-scanline))
+(declaim
+  (inline get-pixel render-pixel)
+  (ftype (function (gameboy (integer 0 (160)) (integer 0 (144)) color-index))
+         render-pixel)
+  (ftype (function (gpu (integer 0 (160)) (integer 0 (144))) color-index)
+         get-pixel)
+  (ftype (function (gameboy)) clear-scanline))
 
-(defun render-pixel (gpu x y final-color)
-  (setf (aref (gpu-screen-data gpu) x y) final-color)
-  (gameboy.gui::blit-pixel (gpu-gui gpu) x y final-color))
+(defun render-pixel (gameboy x y final-color)
+  (setf (aref (gpu-screen-data (gb-gpu gameboy)) x y) final-color)
+  (gameboy.gui::blit-pixel (gb-gui gameboy) x y final-color))
 
 (defun get-pixel (gpu x y)
   (aref (gpu-screen-data gpu) x y))
 
 
 (defun clear-scanline (gameboy)
-  (let ((gpu (gb-gpu gameboy)))
-    (with-gpu (gpu)
-      (iterate
-        (with y = line)
-        (for x :from 0 :below 160)
-        (render-pixel gpu x y 0)))))
+  (iterate
+    (with y = (-> gameboy gb-gpu gpu-line))
+    (for x :from 0 :below 160)
+    (render-pixel gameboy x y 0)))
 
 
 (defun render-background-scanline (gameboy)
@@ -851,7 +852,6 @@
                    (aref vram <>)
                    (tile-id <>))))
         (iterate
-          (with g = gui)
           (with y = line)
           (with cache = tile-cache)
           (with tile-row = (mod (+ y scroll-y) 8))
@@ -861,7 +861,7 @@
           (for full-x = (+ x sx))
           (for color = (tile-pixel cache (background-map-ref x)
                                    tile-row (mod full-x 8)))
-          (gameboy.gui::blit-pixel g x y (apply-palette pal color)))))))
+          (render-pixel gameboy x y (apply-palette pal color)))))))
 
 
 (defun sprite-on-scanline-p (sprite line)
@@ -894,7 +894,7 @@
             (when (and (nonzerop sprite-pixel)
                        (or (zerop background-pixel)
                            (sprite-priority sprite)))
-              (render-pixel gpu screen-x screen-y
+              (render-pixel gameboy screen-x screen-y
                             (apply-palette pal sprite-pixel)))))))))
 
 
@@ -906,13 +906,31 @@
 
 
 (defun scanline (gameboy)
+  (gameboy.gui::set-debug (gb-gui gameboy) `())
+  (clear-scanline gameboy)
   (with-gpu ((gb-gpu gameboy))
-    (gameboy.gui::set-debug gui `())
-    (clear-scanline gameboy)
     (when flag-display (render-background-scanline gameboy))
     (when flag-sprites (render-sprites-scanline gameboy)))
   nil)
 
+(defun throttle (gameboy)
+  (with-gpu ((gb-gpu gameboy))
+    (let* ((fps 60)
+           (spf (/ 1.0 fps))
+           (current-time (get-internal-real-time))
+           (last-time timestamp)
+           (spent-time (/ (- current-time last-time)
+                          internal-time-units-per-second
+                          1.0)))
+      (when (< spent-time spf)
+        (sleep (- spf spent-time))))
+
+    (setf timestamp (get-internal-real-time))))
+
+(defun vblank (gameboy)
+  (gameboy.gui::refresh-screen (gb-gui gameboy))
+  (mark-interrupt gameboy :vblank)
+  (throttle gameboy))
 
 (defun step-gpu (gameboy cycles)
   "Step the GPU.
@@ -931,9 +949,8 @@
            (decf clock 204)
            (incf line)
            (if (= line 143)
-             (progn (gameboy.gui::refresh-screen gui)
-                    (setf mode 1)
-                    (mark-interrupt gameboy :vblank))
+             (progn (vblank gameboy)
+                    (setf mode 1))
              (setf mode 2))))
       ;; VBlank
       (1 (when (>= clock 456)
@@ -2313,16 +2330,14 @@
                     (dump-op gameboy)
                     (dump-registers gameboy)
                     (setf *step* nil))
-                  (when (zerop (mod tick 2000))
-                    (sleep 0.001))
+                  ; (when (zerop (mod tick 2000))
+                  ;   (sleep 0.001))
                   )
                 (sleep 0.01))))))))
-  (->> gameboy gb-gpu gpu-gui gameboy.gui::run-qt-gui))
+  (-<> gameboy gb-gui (gameboy.gui::run-gui <> gameboy)))
 
 (defun start ()
-  (let ((gb (make-gameboy)))
-    (gameboy.gui::init-gui (gpu-gui (gb-gpu gb)) gb)
-    (run gb)))
+  (run (make-gameboy)))
 
 
 ;;;; TODO ---------------------------------------------------------------------
