@@ -111,8 +111,8 @@
 ;;;; Keyboard -----------------------------------------------------------------
 (defun pad-key-for (code)
   (cond
-    ((= code (q+:qt.key_a)) :a)
-    ((= code (q+:qt.key_s)) :b)
+    ((= code (q+:qt.key_z)) :a)
+    ((= code (q+:qt.key_x)) :b)
     ((= code (q+:qt.key_q)) :start)
     ((= code (q+:qt.key_w)) :select)
     ((= code (q+:qt.key_left)) :left)

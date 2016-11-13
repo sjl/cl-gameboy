@@ -1,6 +1,7 @@
 (in-package :gameboy)
 
-(setf *print-length* 4)
+(setf *print-length* 10)
+(setf *print-base* 10)
 (declaim (optimize (speed 1) (safety 3) (debug 3)))
 ; (declaim (optimize (speed 3) (safety 0) (debug 3)))
 ; (declaim (optimize (speed 3) (safety 0) (debug 0)))
@@ -294,10 +295,24 @@
   (line-compare 0 :type int8)
   (scroll-x 0 :type int8)
   (scroll-y 0 :type int8)
+  (window-x 0 :type int8)
+  (window-y 0 :type int8)
   (palette-background #xFF :type int8)
   (palette-object-1 #xFF :type int8)
   (palette-object-2 #xFF :type int8)
   (control 0 :type int8))
+
+(defstruct timer
+  (clock-inst 0 :type fixnum)
+  (clock-base 0 :type fixnum)
+  (clock-divider 0 :type fixnum)
+  (clock-counter 0 :type fixnum)
+  (divider 0 :type int8)
+  (counter 0 :type int8)
+  (modulo 0 :type int8)
+  (speed 0 :type (integer 0 3))
+  (running nil :type boolean))
+
 
 (defstruct (gameboy (:conc-name gb-))
   (gui (gameboy.gui::make-gui))
@@ -318,8 +333,10 @@
   (interrupt-flags 0 :type int8)
   (interrupt-master nil :type boolean)
   (key-column nil)
+  (serial-data 0 :type int8)
   (mmu (make-mmu) :type mmu)
   (gpu (make-gpu) :type gpu)
+  (timer (make-timer) :type timer)
   (halt 0 :type int8))
 
 
@@ -348,7 +365,13 @@
   x y tile palette priority x-flip y-flip raw)
 
 (define-with-macro (mmu)
-  in-bios bios rom banks working-ram external-ram zero-page-ram)
+  in-bios
+  bios
+  rom
+  banks
+  working-ram
+  external-ram
+  zero-page-ram)
 
 (define-with-macro (gpu)
   vram tile-cache sprite-cache screen-data
@@ -356,6 +379,7 @@
   tile-cache-timestamp
   mode clock line line-compare
   scroll-x scroll-y
+  window-x window-y
   palette-background palette-object-1 palette-object-2
   control
   stat
@@ -368,10 +392,21 @@
   flag-window-tile-map
   flag-display)
 
+(define-with-macro (timer)
+  clock-inst
+  clock-base
+  clock-divider
+  clock-counter
+  divider
+  counter
+  modulo
+  speed
+  running)
+
 (define-with-macro (gameboy :conc-name gb)
   a b c d e h l f pc sp
   interrupt-master interrupt-enable interrupt-flags
-  key-column
+  key-column serial-data
   tick clock clock-increment af bc de hl halt
   flag-zero flag-subtract flag-half-carry flag-carry
   gui)
@@ -511,32 +546,35 @@
   (ftype (function (gameboy) int8) read-keys)
   (ftype (function (gameboy int8) null) write-keys))
 
+(defparameter *memory-breakpoint* #xffff)
+(defparameter *memory-breakpoint-value* t)
+(defparameter *memory-breakpoint-mode* :write)
+
+(defparameter *memory-breakpoint* nil)
+(defparameter *memory-breakpoint-value* nil)
+(defparameter *memory-breakpoint-mode* nil)
+
 
 (defun read-keys (gameboy)
   (with-gameboy (gameboy)
     (let ((keys (gameboy.gui::keys-down gui)))
       (case key-column
-        (0 #x00)
-        (2 (-<> 0
-             (set-bit 0 <> (to-bit (not (member :a keys))))
-             (set-bit 1 <> (to-bit (not (member :b keys))))
-             (set-bit 2 <> (to-bit (not (member :select keys))))
-             (set-bit 3 <> (to-bit (not (member :start keys))))))
-        (1 (-<> 0
+        (0 #b00000000)
+        (1 (-<> #b11100000
              (set-bit 0 <> (to-bit (not (member :right keys))))
              (set-bit 1 <> (to-bit (not (member :left keys))))
              (set-bit 2 <> (to-bit (not (member :up keys))))
              (set-bit 3 <> (to-bit (not (member :down keys))))))
-        (t #xff)))))
+        (2 (-<> #b11010000
+             (set-bit 0 <> (to-bit (not (member :a keys))))
+             (set-bit 1 <> (to-bit (not (member :b keys))))
+             (set-bit 2 <> (to-bit (not (member :select keys))))
+             (set-bit 3 <> (to-bit (not (member :start keys))))))
+        (t #b11111111)))))
 
 (defun write-keys (gameboy value)
   (with-gameboy (gameboy)
     (setf key-column
-          #+no (case (logand value #b00110000)
-            (#b00000000 0)
-            (#b00010000 1)
-            (#b00100000 2)
-            (#b00110000 3))
           (case (logior value #b11001111)
             (#b11111111 0)
             (#b11101111 1)
@@ -545,7 +583,36 @@
   nil)
 
 
+(defun check-memory-breakpoint-mode (mode)
+  (case *memory-breakpoint-mode*
+    ((nil) nil)
+    ((t) t)
+    (t (eql mode *memory-breakpoint-mode*))))
+
+(defun check-memory-breakpoint-address (address)
+  (case *memory-breakpoint*
+    ((nil) nil)
+    ((t) t)
+    (t (= address *memory-breakpoint*))))
+
+(defun check-memory-breakpoint-value (mode value)
+  (if (eql mode :read)
+    t
+    (case *memory-breakpoint-value*
+      ((nil) nil)
+      ((t) t)
+      (t (= value *memory-breakpoint-value*)))))
+
+(defun check-memory-breakpoint (mode address &optional value)
+  (when (and (check-memory-breakpoint-mode mode)
+             (check-memory-breakpoint-address address)
+             (check-memory-breakpoint-value mode value))
+    (pr 'memory-breakpoint mode address value)
+    (setf *paused* t)))
+
+
 (defun mem-8 (gameboy address)
+  (check-memory-breakpoint :read address)
   (with-mmu ((gb-mmu gameboy))
     (cond
       ;; BIOS/ROM
@@ -575,6 +642,12 @@
       ;; Joypad
       ((= address #xFF00) (read-keys gameboy))
 
+      ;; Timer
+      ((= address #xFF04) (read-timer-divider gameboy))
+      ((= address #xFF05) (read-timer-counter gameboy))
+      ((= address #xFF06) (read-timer-modulo gameboy))
+      ((= address #xFF07) (read-timer-control gameboy))
+
       ;; Interrupt Flags
       ((= address #xFF0F) (gb-interrupt-flags gameboy))
 
@@ -588,8 +661,9 @@
       ((= address #xFF47) (gpu-palette-background (gb-gpu gameboy)))
       ((= address #xFF48) (gpu-palette-object-1 (gb-gpu gameboy)))
       ((= address #xFF49) (gpu-palette-object-2 (gb-gpu gameboy)))
-      ((or (= address #xFF50) ; todo ???
-           (= address #xFF7F)) ; todo ???
+      ((= address #xFF4A) (gpu-window-y (gb-gpu gameboy)))
+      ((= address #xFF4B) (gpu-window-x (gb-gpu gameboy)))
+      ((< #xFF4B address #xFF80)
        (aref (gpu-io (gb-gpu gameboy)) (- address #xFF00)))
       ((< address #xFF80) (error "Read I/O unimplemented ~4,'0X" address))
 
@@ -603,6 +677,7 @@
       (t (error "Bad memory address: ~X" address)))))
 
 (defun (setf mem-8) (value gameboy address)
+  (check-memory-breakpoint :write address value)
   (with-mmu ((gb-mmu gameboy))
     (cond
       ;; BIOS/ROM
@@ -640,12 +715,19 @@
       ((= address #xFF01) (write-serial gameboy value))
       ((= address #xFF02) (write-serial-control gameboy value))
 
+      ;; Timer
+      ((= address #xFF04) (write-timer-divider gameboy value))
+      ((= address #xFF05) (write-timer-counter gameboy value))
+      ((= address #xFF06) (write-timer-modulo gameboy value))
+      ((= address #xFF07) (write-timer-control gameboy value))
+
       ;; Interrupt Flags
       ((= address #xFF0F) (setf (gb-interrupt-flags gameboy) value))
 
       ;; I/O
       ((<= #xFF10 address #xFF3F) 0) ; todo: sound
       ((= address #xFF40) (setf (gpu-control (gb-gpu gameboy)) value))
+      ((= address #xFF41) 0) ;; todo: what is writing to STAT supposed to do?
       ((= address #xFF42) (setf (gpu-scroll-y (gb-gpu gameboy)) value))
       ((= address #xFF43) (setf (gpu-scroll-x (gb-gpu gameboy)) value))
       ;; writing here always reset the scanline counter, gameboys are weird
@@ -655,12 +737,12 @@
       ((= address #xFF47) (setf (gpu-palette-background (gb-gpu gameboy)) value))
       ((= address #xFF48) (setf (gpu-palette-object-1 (gb-gpu gameboy)) value))
       ((= address #xFF49) (setf (gpu-palette-object-2 (gb-gpu gameboy)) value))
+      ((= address #xFF4A) (setf (gpu-window-y (gb-gpu gameboy)) value))
+      ((= address #xFF4B) (setf (gpu-window-x (gb-gpu gameboy)) value))
       ((= address #xFF50) (setf (aref (gpu-io (gb-gpu gameboy)) ; todo
                                       (- address #xFF00))
                                 value))
-      ((or (= address #xFF41) ; todo STAT??
-           (= address #xFF50) ; todo ???
-           (= address #xFF7F)) ; todo ???
+      ((< #xFF4B address #xFF80)
        (setf (aref (gpu-io (gb-gpu gameboy)) (- address #xFF00))
              value))
       ((< address #xFF80) (error "Write I/O unimplemented ~4,'0X" address))
@@ -686,8 +768,13 @@
 
 ;;;; ROMs ---------------------------------------------------------------------
 (defun load-rom (gameboy filename)
-  (replace (-> gameboy gb-mmu mmu-rom)
-           (read-file-into-byte-vector filename)))
+  (let ((mmu (gb-mmu gameboy))
+        (data (read-file-into-byte-vector filename)))
+    (replace (mmu-rom mmu) data
+             :start2 #x0000 :end2 #x4000)
+    (replace (-<> mmu mmu-banks (aref <> 0)) data
+             :start2 #x4000 :end2 #x8000)
+    nil))
 
 (defun clear-rom (gameboy)
   (fill (-> gameboy gb-mmu mmu-rom) 0))
@@ -915,7 +1002,7 @@
 
 (defun throttle (gameboy)
   (with-gpu ((gb-gpu gameboy))
-    (let* ((fps 60)
+    (let* ((fps 120)
            (spf (/ 1.0 fps))
            (current-time (get-internal-real-time))
            (last-time timestamp)
@@ -979,12 +1066,102 @@
            (setf (mem-8 gameboy dest)
                  (mem-8 gameboy source))))
 
+
 ;;;; Serial -------------------------------------------------------------------
+(defun read-serial (gameboy)
+  (with-gameboy (gameboy)
+    serial-data))
+
 (defun write-serial (gameboy value)
-  (declare (ignore gameboy value)))
+  (with-gameboy (gameboy)
+    (setf serial-data value)))
 
 (defun write-serial-control (gameboy value)
-  (declare (ignore gameboy value)))
+  ;; todo: implement more of this
+  (with-gameboy (gameboy)
+    (when (= value #x81)
+      (princ (code-char serial-data))
+      (finish-output))))
+
+
+;;;; Timer --------------------------------------------------------------------
+(defun write-timer-control (gameboy value)
+  ;; Timer control register looks like this:
+  ;;
+  ;; xxxxxESS
+  ;;
+  ;; E = one bit for enabled
+  ;; SS = two bits for speed
+  (with-timer ((gb-timer gameboy))
+    (setf running (logbitp 2 value)
+          speed (ldb (byte 2 0) value))))
+
+(defun read-timer-control (gameboy)
+  ;; Timer control register looks like this:
+  ;;
+  ;; xxxxxESS
+  ;;
+  ;; E = one bit for enabled
+  ;; SS = two bits for speed
+  (with-timer ((gb-timer gameboy))
+    (cat speed (to-bit running) 2 1)))
+
+
+(defun write-timer-divider (gameboy value)
+  (declare (ignore value))
+  (with-timer ((gb-timer gameboy))
+    ;; Writing any value to the timer register just resets it to zero
+    (setf divider 0)))
+
+(defun write-timer-modulo (gameboy value)
+  (with-timer ((gb-timer gameboy))
+    (setf modulo value)))
+
+(defun write-timer-counter (gameboy value)
+  (with-timer ((gb-timer gameboy))
+    (setf counter value)))
+
+
+(defun read-timer-divider (gameboy)
+  (-> gameboy gb-timer timer-divider))
+
+(defun read-timer-modulo (gameboy)
+  (-> gameboy gb-timer timer-modulo))
+
+(defun read-timer-counter (gameboy)
+  (-> gameboy gb-timer timer-counter))
+
+
+(defun counter-cycles (speed)
+  (case speed
+    (0 64)
+    (1 1)
+    (2 4)
+    (3 16)))
+
+(defun tick-timer (gameboy)
+  (with-timer ((gb-timer gameboy))
+    ;; Keep track of the instruction cycles
+    (incf clock-inst)
+    ;; The timer's base clock increments at 1/4 the rate of the instruction clock
+    (when (zerop (mod clock-inst 4))
+      (incf clock-base))
+    ;; The timer's divider clock increments at 1/16 the rate of the base clock
+    (when (zerop (mod clock-base 16))
+      (incf clock-divider)
+      (incf-8 divider))
+    ;; The programmable clock increments at a variable speed
+    (when (and running (zerop (mod clock-base (counter-cycles speed))))
+      (incf clock-counter)
+      (if (= counter #xFF) ; counter rolls over at 255
+        (progn (setf counter modulo)
+               (mark-interrupt gameboy :timer))
+        (incf clock-counter)))))
+
+(defun update-timer (gameboy)
+  ;; Not the most efficient way to do this, but easier to think about...
+  (dotimes (_ (gb-clock-increment gameboy))
+    (tick-timer gameboy)))
 
 
 ;;;; Opcodes ------------------------------------------------------------------
@@ -1107,6 +1284,10 @@
   (setf sp val)
   (increment-clock gameboy 3))
 
+(define-opcode ld-r/sp<r/hl ()                         ; LD SP, HL
+  (setf sp hl)
+  (increment-clock gameboy 2))
+
 (define-opcode ld-mem/i<r/sp ((val 16))                ; LD (i), SP
   (setf (mem-16 gameboy val) sp)
   (increment-clock gameboy 5))
@@ -1147,15 +1328,6 @@
   (setf (mem-8 gameboy (+ #xff00 c)) a)
   (increment-clock gameboy 2))
 
-(define-opcode ld-r/hl<mem/sp+i (offset)               ; LD HL, SP+i
-  (with-chopped-16 (full trunc (+ sp (unsigned-to-signed-8 offset)))
-    (setf hl trunc)
-    (set-flag gameboy
-              :zero nil
-              :subtract nil
-              :half-carry nil ; todo
-              :carry (> full 255)))
-  (increment-clock gameboy 3))
 
 
 ;;; Swap
@@ -1214,9 +1386,9 @@
 
 (macro-map (register (bc de hl sp))                    ; ADD HL, BC/DE/HL/SP
   `(define-opcode ,(symb 'add-r/hl<r/ register) ()
-    (multiple-value-bind (result zero half-carry carry)
+    (multiple-value-bind (result zero subtract half-carry carry)
         (+_16 hl ,register)
-      (declare (ignore zero))
+      (declare (ignore zero subtract))
       (setf hl result)
       (set-flag gameboy
                 ; the zero flag isn't affected here for some weird fuckin' reason
@@ -1225,15 +1397,40 @@
                 :carry carry))
     (increment-clock gameboy 2)))
 
+
+(defun fucked-up-stack-pointer-addition (sp offset)
+  ;; The signed-addition-with-stack-pointer operations are just totally fuckin
+  ;; wonky when it comes to the flags, so we'll handle them on their own.
+  (with-chopped-16 (full trunc (+ sp offset))
+    (values trunc
+            ;; half carry and carry are set based on the LOW order byte here,
+            ;; not the high order byte like all the other 16-bit ops, because
+            ;; fuck you.
+            (> (+ (chop-4 sp) (chop-4 offset)) #xF)
+            (> (+ (chop-8 sp) (chop-8 offset)) #xFF))))
+
 (define-opcode add-r/sp<i (val)                        ; ADD SP, i
-  ; todo this hole thing is fucked, especially the flags, fix later
-  (incf-16 sp (unsigned-to-signed-8 val))
-  (set-flag gameboy
-            :zero nil ; lol what gameboy?
-            :subtract nil
-            :half-carry nil ; todo
-            :carry nil) ; todo
+  (multiple-value-bind (result half-carry carry)
+      (fucked-up-stack-pointer-addition sp (unsigned-to-signed-8 val))
+    (setf sp result)
+    (set-flag gameboy
+              :zero nil ; lol what gameboy?
+              :subtract nil
+              :half-carry half-carry
+              :carry carry))
   (increment-clock gameboy 4))
+
+(define-opcode ld-r/hl<mem/sp+i (val)                  ; LD HL, SP+i
+  (multiple-value-bind (result half-carry carry)
+      (fucked-up-stack-pointer-addition sp (unsigned-to-signed-8 val))
+    (setf hl result)
+    (set-flag gameboy
+              :zero nil ; lol what gameboy?
+              :subtract nil
+              :half-carry half-carry
+              :carry carry))
+  (increment-clock gameboy 3))
+
 
 (macro-map                                             ; SUB/SBC A, *
   (((name source &optional (clock 1) (arglist ())) with-carry)
@@ -1798,11 +1995,11 @@
 
     (#x70 ld-mem/hl<r/b)
     (#x71 ld-mem/hl<r/c)
-    (#x72 ld-mem/hl<r/e)
+    (#x72 ld-mem/hl<r/d)
     (#x73 ld-mem/hl<r/e)
     (#x74 ld-mem/hl<r/h)
     (#x75 ld-mem/hl<r/l)
-    ; (#x76 )
+    (#x76 halt)
     (#x77 ld-mem/hl<r/a)
     (#x78 ld-r/a<r/b)
     (#x79 ld-r/a<r/c)
@@ -1893,14 +2090,14 @@
     (#xC9 ret)
     (#xCA jp-z-i)
     (#xCB extended)
-    ; (#xCC )
+    (#xCC call-z-i)
     (#xCD call-i)
-    ; (#xCE )
+    (#xCE adc-r/a<i)
     (#xCF rst-08)
 
     (#xD0 ret-nc)
     (#xD1 pop-r/de)
-    ; (#xD2 )
+    (#xD2 jp-nc-i)
     ; (#xD3 )
     (#xD4 call-nc-i)
     (#xD5 push-r/de)
@@ -1910,9 +2107,9 @@
     (#xD9 reti)
     (#xDA jp-c-i)
     ; (#xDB )
-    ; (#xDC )
+    (#xDC call-c-i)
     ; (#xDD )
-    ; (#xDE )
+    (#xDE sbc-r/a<i)
     (#xDF rst-18)
 
     (#xE0 ldh-mem/i<r/a)
@@ -1924,7 +2121,7 @@
     (#xE6 and-r/a<i)
     (#xE7 rst-20)
     (#xE8 add-r/sp<i)
-    ; (#xE9 )
+    (#xE9 jp-mem/hl)
     (#xEA ld-mem/i<r/a)
     ; (#xEB )
     ; (#xEC )
@@ -1940,8 +2137,8 @@
     (#xF5 push-r/af)
     (#xF6 or-r/a<i)
     (#xF7 rst-30)
-    ; (#xF8 )
-    ; (#xF9 )
+    (#xF8 ld-r/hl<mem/sp+i)
+    (#xF9 ld-r/sp<r/hl)
     (#xFA ld-r/a<mem/i)
     (#xFB ei)
     ; (#xFC )
@@ -2086,70 +2283,70 @@
     (#x7D bit-7-r/l)
     (#x7E bit-7-mem/hl)
     (#x7F bit-7-r/a)
-    ; (#x80 )
-    ; (#x81 )
-    ; (#x82 )
-    ; (#x83 )
-    ; (#x84 )
-    ; (#x85 )
-    ; (#x86 )
-    ; (#x87 )
-    ; (#x88 )
-    ; (#x89 )
-    ; (#x8A )
-    ; (#x8B )
-    ; (#x8C )
-    ; (#x8D )
-    ; (#x8E )
-    ; (#x8F )
-    ; (#x90 )
-    ; (#x91 )
-    ; (#x92 )
-    ; (#x93 )
-    ; (#x94 )
-    ; (#x95 )
-    ; (#x96 )
-    ; (#x97 )
-    ; (#x98 )
-    ; (#x99 )
-    ; (#x9A )
-    ; (#x9B )
-    ; (#x9C )
-    ; (#x9D )
-    ; (#x9E )
-    ; (#x9F )
-    ; (#xA0 )
-    ; (#xA1 )
-    ; (#xA2 )
-    ; (#xA3 )
-    ; (#xA4 )
-    ; (#xA5 )
-    ; (#xA6 )
-    ; (#xA7 )
-    ; (#xA8 )
-    ; (#xA9 )
-    ; (#xAA )
-    ; (#xAB )
-    ; (#xAC )
-    ; (#xAD )
-    ; (#xAE )
-    ; (#xAF )
-    ; (#xB0 )
-    ; (#xB1 )
-    ; (#xB2 )
-    ; (#xB3 )
-    ; (#xB4 )
-    ; (#xB5 )
-    ; (#xB6 )
-    ; (#xB7 )
-    ; (#xB8 )
-    ; (#xB9 )
-    ; (#xBA )
-    ; (#xBB )
-    ; (#xBC )
-    ; (#xBD )
-    ; (#xBE )
-    ; (#xBF )
+    (#x80 res-0-r/b)
+    (#x81 res-0-r/c)
+    (#x82 res-0-r/d)
+    (#x83 res-0-r/e)
+    (#x84 res-0-r/h)
+    (#x85 res-0-r/l)
+    (#x86 res-0-mem/hl)
+    (#x87 res-0-r/a)
+    (#x88 res-1-r/b)
+    (#x89 res-1-r/c)
+    (#x8A res-1-r/d)
+    (#x8B res-1-r/e)
+    (#x8C res-1-r/h)
+    (#x8D res-1-r/l)
+    (#x8E res-1-mem/hl)
+    (#x8F res-1-r/a)
+    (#x90 res-2-r/b)
+    (#x91 res-2-r/c)
+    (#x92 res-2-r/d)
+    (#x93 res-2-r/e)
+    (#x94 res-2-r/h)
+    (#x95 res-2-r/l)
+    (#x96 res-2-mem/hl)
+    (#x97 res-2-r/a)
+    (#x98 res-3-r/b)
+    (#x99 res-3-r/c)
+    (#x9A res-3-r/d)
+    (#x9B res-3-r/e)
+    (#x9C res-3-r/h)
+    (#x9D res-3-r/l)
+    (#x9E res-3-mem/hl)
+    (#x9F res-3-r/a)
+    (#xA0 res-4-r/b)
+    (#xA1 res-4-r/c)
+    (#xA2 res-4-r/d)
+    (#xA3 res-4-r/e)
+    (#xA4 res-4-r/h)
+    (#xA5 res-4-r/l)
+    (#xA6 res-4-mem/hl)
+    (#xA7 res-4-r/a)
+    (#xA8 res-1-r/b)
+    (#xA9 res-5-r/c)
+    (#xAA res-5-r/d)
+    (#xAB res-5-r/e)
+    (#xAC res-5-r/h)
+    (#xAD res-5-r/l)
+    (#xAE res-5-mem/hl)
+    (#xAF res-5-r/a)
+    (#xB0 res-6-r/b)
+    (#xB1 res-6-r/c)
+    (#xB2 res-6-r/d)
+    (#xB3 res-6-r/e)
+    (#xB4 res-6-r/h)
+    (#xB5 res-6-r/l)
+    (#xB6 res-6-mem/hl)
+    (#xB7 res-6-r/a)
+    (#xB8 res-7-r/b)
+    (#xB9 res-7-r/c)
+    (#xBA res-7-r/d)
+    (#xBB res-7-r/e)
+    (#xBC res-7-r/h)
+    (#xBD res-7-r/l)
+    (#xBE res-7-mem/hl)
+    (#xBF res-7-r/a)
     ; (#xC0 )
     ; (#xC1 )
     ; (#xC2 )
@@ -2238,6 +2435,8 @@
 (defparameter *running* t)
 (defparameter *paused* nil)
 (defparameter *step* nil)
+(defparameter *breakpoint* #x4317)
+(defparameter *breakpoint* #xc319)
 (defparameter *breakpoint* nil)
 
 (defparameter *gb* nil)
@@ -2279,6 +2478,20 @@
       (format t "  CONTROL: #b~8,'0B/~2,'0X~%" control control)
       (format t "     STAT: #b~8,'0B/~2,'0X~%" stat stat)
       (terpri))
+    (with-mmu ((gb-mmu gameboy))
+      (format t "ZRAM: [~{~2,'0X ~}...]~%" (take 16 (coerce zero-page-ram 'list)))
+      (terpri))
+    (with-timer ((gb-timer gameboy))
+      (format t "  CLOCK INST: ~D~%" clock-inst)
+      (format t "  CLOCK BASE: ~D~%" clock-base)
+      (format t "  CLOCK DIV: ~D~%" clock-divider)
+      (format t "  CLOCK COUNTER: ~D~%" clock-counter)
+      (format t "  DIV: ~D~%" divider)
+      (format t "  COUNTER: ~D~%" counter)
+      (format t "  MODULO: ~D~%" modulo)
+      (format t "  SPEED: ~D~%" speed)
+      (format t "  RUNNING: ~D~%" running)
+      (terpri))
     (finish-output)))
 
 
@@ -2287,6 +2500,7 @@
     (when (and interrupt-master
                (nonzerop interrupt-enable)
                (nonzerop interrupt-flags))
+      (pr "Interrupt (might) fire...")
       (setf halt 0 interrupt-master nil)
       (macrolet ((b (i op)
                    `((interrupt-bit ,i)
@@ -2303,7 +2517,18 @@
 
 (defun run (gameboy)
   (load-opcode-tables)
-  (load-rom gameboy "roms/ttt.gb")
+  ; (load-rom gameboy "roms/blargg/cpu_instrs/individual/01-special.gb")
+  (load-rom gameboy "roms/blargg/cpu_instrs/individual/02-interrupts.gb")
+  ; (load-rom gameboy "roms/blargg/cpu_instrs/individual/03-op sp,hl.gb")
+  ; (load-rom gameboy "roms/blargg/cpu_instrs/individual/04-op r,imm.gb")
+  ; (load-rom gameboy "roms/blargg/cpu_instrs/individual/05-op rp.gb")
+  ; (load-rom gameboy "roms/blargg/cpu_instrs/individual/06-ld r,r.gb")
+  ; (load-rom gameboy "roms/blargg/cpu_instrs/individual/07-jr,jp,call,ret,rst.gb")
+  ; (load-rom gameboy "roms/blargg/cpu_instrs/individual/08-misc instrs.gb")
+  ; (load-rom gameboy "roms/ttt.gb")
+  ; (load-rom gameboy "roms/opus1.gb")
+  ; (load-rom gameboy "roms/tetris-1.0.gb")
+  ; (load-rom gameboy "roms/dr-mario.gb")
   (setf *running* t *gb* gameboy)
   (bt:make-thread
     (lambda ()
@@ -2319,26 +2544,23 @@
                 (progn
                   (incf tick)
                   (setf clock-increment 0)
-                  (for opcode = (mem-8 gameboy pc))
-                  (for op = (aref *opcodes* opcode))
-                  (incf-16 pc)
-                  (funcall op gameboy)
+                  (if (nonzerop halt)
+                    (setf clock-increment 1)
+                    (progn
+                      (for opcode = (mem-8 gameboy pc))
+                      (for op = (aref *opcodes* opcode))
+                      (incf-16 pc)
+                      (funcall op gameboy)))
                   (dispatch-interrupts gameboy)
                   (incf clock clock-increment)
                   (step-gpu gameboy (* 4 clock-increment))
+                  (update-timer gameboy)
                   (when *step*
                     (dump-op gameboy)
                     (dump-registers gameboy)
-                    (setf *step* nil))
-                  ; (when (zerop (mod tick 2000))
-                  ;   (sleep 0.001))
-                  )
+                    (setf *step* nil)))
                 (sleep 0.01))))))))
   (-<> gameboy gb-gui (gameboy.gui::run-gui <> gameboy)))
 
 (defun start ()
   (run (make-gameboy)))
-
-
-;;;; TODO ---------------------------------------------------------------------
-;;; * STOP opcode
